@@ -1,4 +1,10 @@
-import type { TransitLine, LineSchedule, RunEdge } from './types.js';
+import type { TransitLine, LineSchedule, RunEdge, ScheduleWindow } from './types.js';
+
+type LegacyLineSchedule = {
+  firstDeparture: number;
+  lastDeparture: number;
+  headwayMin: number;
+};
 
 /**
  * Returns the cumulative travel time to reach stationIdx from the first stop.
@@ -17,13 +23,13 @@ export function getStationOffset(line: TransitLine, stationIdx: number): number 
  * you arrive at the station, returns the next departure time (minutes since midnight),
  * or null if no more trains run today.
  */
-function nextDepartureFromSchedule(
-  schedule: LineSchedule,
+function nextDepartureFromWindow(
+  window: ScheduleWindow,
   stationOffset: number,
   arriveAt: number
 ): number | null {
-  const firstAtStation = schedule.firstDeparture + stationOffset;
-  const lastAtStation = schedule.lastDeparture + stationOffset;
+  const firstAtStation = window.firstDeparture + stationOffset;
+  const lastAtStation = window.lastDeparture + stationOffset;
 
   if (arriveAt > lastAtStation) {
     return null;
@@ -34,8 +40,8 @@ function nextDepartureFromSchedule(
   }
 
   const elapsed = arriveAt - firstAtStation;
-  const cyclesNeeded = Math.ceil(elapsed / schedule.headwayMin);
-  const departure = firstAtStation + cyclesNeeded * schedule.headwayMin;
+  const cyclesNeeded = Math.ceil(elapsed / window.headwayMin);
+  const departure = firstAtStation + cyclesNeeded * window.headwayMin;
 
   if (departure > lastAtStation) {
     return null;
@@ -44,13 +50,43 @@ function nextDepartureFromSchedule(
   return departure;
 }
 
+function getScheduleWindows(schedule: LineSchedule | LegacyLineSchedule): ScheduleWindow[] {
+  if ('windows' in schedule && Array.isArray(schedule.windows)) {
+    return schedule.windows.length > 0
+      ? schedule.windows
+      : [{ firstDeparture: 360, lastDeparture: 1380, headwayMin: 10 }];
+  }
+
+  return [schedule as LegacyLineSchedule];
+}
+
+/**
+ * Returns the earliest next departure across all windows in a direction schedule.
+ */
+function nextDepartureFromSchedule(
+  schedule: LineSchedule | LegacyLineSchedule,
+  stationOffset: number,
+  arriveAt: number
+): number | null {
+  const windows = getScheduleWindows(schedule);
+
+  let best: number | null = null;
+  for (const window of windows) {
+    const dep = nextDepartureFromWindow(window, stationOffset, arriveAt);
+    if (dep !== null && (best === null || dep < best)) {
+      best = dep;
+    }
+  }
+  return best;
+}
+
 /**
  * Given a line, the index of the station on that line, and the time you arrive
  * at that station, returns the next forward-direction departure time (minutes since midnight)
  * from that station, or null if no more trains run today.
  *
- * The line schedule is defined from the first stop. Trains depart the first
- * stop at forwardSchedule.firstDeparture, +headwayMin, ..., lastDeparture.
+ * The line schedule is defined from the first stop. Each window describes
+ * first/last departures and headway for that service period.
  * Each subsequent station is offset by getStationOffset.
  */
 export function nextDeparture(
@@ -85,7 +121,7 @@ export function getStationOffsetReverse(line: TransitLine, stationIdx: number): 
 
 /**
  * Next reverse-direction departure at stationIdx.
- * The reverse train departs from the LAST stop at reverseSchedule.firstDeparture + headway intervals,
+ * The reverse train departs from the LAST stop based on reverseSchedule windows,
  * and arrives at intermediate stations with offsets calculated from the end.
  * Returns null if no more reverse trains today.
  * If there is no reverseSchedule, falls back to forwardSchedule.

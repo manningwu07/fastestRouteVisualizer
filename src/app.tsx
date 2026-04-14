@@ -65,34 +65,144 @@ function useResizableSidebar(
 
 function BuilderSidePanel({ width }: { width: number }) {
   const { selectedTool, transfers, selectedLineId, selectedRunEdgeId } = useStore();
+  const [topPaneHeight, setTopPaneHeight] = useState(520);
+  const [isTransferDividerDragging, setIsTransferDividerDragging] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const dragStartY = useRef(0);
+  const dragStartTopHeight = useRef(520);
+  const transferSplitInitializedRef = useRef(false);
 
   // Priority: LineEditor / RunEdgeEditor > tool-specific panel > StationPanel
   const showLineEditor = selectedLineId !== null;
   const showRunEdgeEditor = selectedRunEdgeId !== null && !showLineEditor;
 
+  const clampTopHeight = useCallback((panelHeight: number, desiredTop: number) => {
+    const dividerHeight = 10;
+    const minTop = 0;
+    const maxTop = Math.max(minTop, panelHeight - dividerHeight);
+    return Math.max(minTop, Math.min(maxTop, desiredTop));
+  }, []);
+
+  useEffect(() => {
+    const panelHeight = panelRef.current?.clientHeight ?? 0;
+    if (panelHeight <= 0) return;
+
+    if (transfers.length === 0) {
+      transferSplitInitializedRef.current = false;
+      return;
+    }
+
+    setTopPaneHeight(prev => {
+      const desiredInitial = panelHeight - 320;
+      const target = transferSplitInitializedRef.current ? prev : desiredInitial;
+      return clampTopHeight(panelHeight, target);
+    });
+
+    transferSplitInitializedRef.current = true;
+  }, [transfers.length, clampTopHeight]);
+
+  useEffect(() => {
+    const onWindowResize = () => {
+      const panelHeight = panelRef.current?.clientHeight ?? 0;
+      if (panelHeight <= 0 || transfers.length === 0) return;
+      setTopPaneHeight(prev => clampTopHeight(panelHeight, prev));
+    };
+
+    window.addEventListener('resize', onWindowResize);
+    return () => window.removeEventListener('resize', onWindowResize);
+  }, [transfers.length, clampTopHeight]);
+
+  const handleTransferDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragStartY.current = e.clientY;
+    dragStartTopHeight.current = topPaneHeight;
+    setIsTransferDividerDragging(true);
+  }, [topPaneHeight]);
+
+  useEffect(() => {
+    if (!isTransferDividerDragging) return;
+
+    const onMouseMove = (e: MouseEvent) => {
+      const panelHeight = panelRef.current?.clientHeight ?? 0;
+      const nextTop = dragStartTopHeight.current + (e.clientY - dragStartY.current);
+      setTopPaneHeight(clampTopHeight(panelHeight, nextTop));
+    };
+
+    const onMouseUp = () => setIsTransferDividerDragging(false);
+
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
+    return () => {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [isTransferDividerDragging, clampTopHeight]);
+
   return (
-    <div style={{ ...sidePanelStyle, width }}>
-      {showLineEditor ? (
-        <LineEditor />
-      ) : showRunEdgeEditor ? (
-        <RunEdgeEditor />
-      ) : (
-        <>
-          {selectedTool === 'addLine' && <LineCreator />}
-          {selectedTool === 'addRunEdge' && <RunEdgeCreator />}
-          {selectedTool === 'select' && <StationPanel />}
-          {selectedTool === 'addStation' && (
-            <div style={{ padding: 12 }}>
-              <div style={sectionHeader}>Add Station</div>
-              <div style={hintStyle}>Click anywhere on the canvas to place a new station.</div>
-            </div>
-          )}
-        </>
-      )}
+    <div ref={panelRef} style={{ ...sidePanelStyle, width, overflowY: 'hidden' }}>
+      <div
+        style={{
+          flexShrink: 0,
+          height: transfers.length > 0 ? topPaneHeight : '100%',
+          minHeight: 0,
+          overflowY: 'auto',
+        }}
+      >
+        {showLineEditor ? (
+          <LineEditor />
+        ) : showRunEdgeEditor ? (
+          <RunEdgeEditor />
+        ) : (
+          <>
+            {selectedTool === 'addLine' && <LineCreator />}
+            {selectedTool === 'addRunEdge' && <RunEdgeCreator />}
+            {selectedTool === 'select' && <StationPanel />}
+            {selectedTool === 'addStation' && (
+              <div style={{ padding: 12 }}>
+                <div style={sectionHeader}>Add Station</div>
+                <div style={hintStyle}>Click anywhere on the canvas to place a new station.</div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
       {transfers.length > 0 && (
-        <div style={{ borderTop: '1px solid #222', marginTop: 8 }}>
-          <TransferTable />
-        </div>
+        <>
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            title="Drag to resize transfer table"
+            onMouseDown={handleTransferDividerMouseDown}
+            style={{
+              height: 10,
+              borderTop: '1px solid #222',
+              borderBottom: '1px solid #1a1a35',
+              cursor: 'row-resize',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: isTransferDividerDragging ? '#171737' : '#101026',
+              flexShrink: 0,
+            }}
+          >
+            <div
+              style={{
+                width: 46,
+                height: 3,
+                borderRadius: 2,
+                background: isTransferDividerDragging ? '#7ec8e3' : '#40406b',
+              }}
+            />
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
+            <TransferTable />
+          </div>
+        </>
       )}
     </div>
   );

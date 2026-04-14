@@ -4,6 +4,7 @@ export interface NumericInputProps {
   value: number | string;
   onChange: (value: number) => void;
   onSubmit?: () => void;
+  onBlur?: () => void;
   placeholder?: string;
   style?: React.CSSProperties;
   min?: number;
@@ -20,6 +21,7 @@ export function NumericInput({
   value,
   onChange,
   onSubmit,
+  onBlur,
   placeholder,
   style,
   min = 0,
@@ -75,6 +77,7 @@ export function NumericInput({
       onChange={handleChange}
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
+      onBlur={onBlur}
       placeholder={placeholder}
       style={style ?? defaultStyle}
     />

@@ -1,8 +1,7 @@
 import React from 'react';
 import type { Connection } from '../engine/graph.js';
-import type { RunEdge } from '../engine/types.js';
 import { useStore } from '../state/store.js';
-import { getStationOffsetReverse } from '../engine/scheduler.js';
+import { nextDeparture, nextDepartureReverse } from '../engine/scheduler.js';
 
 function toHHMM(minutes: number): string {
   const h = Math.floor(minutes / 60) % 24;
@@ -29,28 +28,9 @@ export function ConnectionPicker({ toStationId, connections, onPick, onCancel }:
     const line = lines[conn.lineId];
     if (!line) return null;
 
-    let offset: number;
-    let schedule;
-    if (conn.direction === 'reverse') {
-      offset = getStationOffsetReverse(line, conn.fromIdx);
-      schedule = line.reverseSchedule ?? line.forwardSchedule;
-    } else {
-      offset = (() => {
-        let o = 0;
-        for (let i = 0; i < conn.fromIdx; i++) o += line.travelTimes[i];
-        return o;
-      })();
-      schedule = line.forwardSchedule;
-    }
-
-    const firstAtStation = schedule.firstDeparture + offset;
-    const lastAtStation = schedule.lastDeparture + offset;
-    if (currentTime > lastAtStation) return null;
-    if (currentTime <= firstAtStation) return firstAtStation;
-    const elapsed = currentTime - firstAtStation;
-    const cycles = Math.ceil(elapsed / schedule.headwayMin);
-    const dep = firstAtStation + cycles * schedule.headwayMin;
-    return dep > lastAtStation ? null : dep;
+    return conn.direction === 'reverse'
+      ? nextDepartureReverse(line, conn.fromIdx, currentTime)
+      : nextDeparture(line, conn.fromIdx, currentTime);
   }
 
   function getTravelTime(conn: Connection): number {
@@ -60,7 +40,8 @@ export function ConnectionPicker({ toStationId, connections, onPick, onCancel }:
     let t = 0;
     if (conn.direction === 'reverse') {
       // fromIdx > toIdx; sum segments between toIdx and fromIdx
-      for (let i = conn.toIdx; i < conn.fromIdx; i++) t += line.travelTimes[i];
+      const reverseSegmentTimes = line.reverseTravelTimes ?? line.travelTimes;
+      for (let i = conn.toIdx; i < conn.fromIdx; i++) t += reverseSegmentTimes[i];
     } else {
       for (let i = conn.fromIdx; i < conn.toIdx; i++) t += line.travelTimes[i];
     }

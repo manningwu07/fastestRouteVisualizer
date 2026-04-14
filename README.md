@@ -71,11 +71,11 @@ bun run test:watch
 
 ### Pathfinder Mode
 
-1. Set a route start time.
-2. Pick a start station.
-3. Click reachable stations to extend a route.
+1. Click stations in the order you want to visit them (waypoints).
+2. Optionally set a start-time search window (for example, 06:00 to 10:00).
+3. Run solver to brute-force start times in that window and compute the fastest timed route.
 4. Inspect timing details and total travel time.
-5. Save routes and compare alternatives.
+5. Copy Google Sheets-ready rows and compare saved alternatives.
 
 ## Keyboard Shortcuts
 

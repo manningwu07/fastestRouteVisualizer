@@ -1,8 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useStore } from '../state/store.js';
-import { getConnectionsBetween } from '../engine/graph.js';
-import type { Connection } from '../engine/graph.js';
-import { ConnectionPicker } from './ConnectionPicker.js';
 
 const STATION_RADIUS = 12;
 const HIT_THRESHOLD = 10;
@@ -56,10 +53,6 @@ export function GraphCanvas() {
   const panRef = useRef<PanState | null>(null);
   const lastLineClickRef = useRef<{ x: number; y: number; lineIds: string[]; idx: number } | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
-  const [pickerState, setPickerState] = useState<{
-    toStationId: string;
-    connections: Connection[];
-  } | null>(null);
 
   // Zoom/pan state — keep both React state (for re-render) and refs (for sync access in handlers)
   const [zoom, setZoom] = useState(1.0);
@@ -88,7 +81,6 @@ export function GraphCanvas() {
     stations,
     lines,
     runEdges,
-    transfers,
     selectedTool,
     selectedStationIds,
     selectedLineId,
@@ -101,8 +93,7 @@ export function GraphCanvas() {
     setSelectedStationIds,
     setSelectedLineId,
     setSelectedRunEdgeId,
-    addRouteStep,
-    setPathfinderSelectedStation,
+    addPathfinderWaypoint,
   } = useStore();
 
   // Resize observer
@@ -295,14 +286,14 @@ export function GraphCanvas() {
     // Pathfinder route arrows
     if (mode === 'pathfinder' && currentRoute.length >= 2) {
       for (let i = 0; i < currentRoute.length - 1; i++) {
-        const step = currentRoute[i];
-        const nextStep = currentRoute[i + 1];
-        const from = stations[step.stationId];
-        const to = stations[nextStep.stationId];
+        const fromStep = currentRoute[i];
+        const toStep = currentRoute[i + 1];
+        const from = stations[fromStep.stationId];
+        const to = stations[toStep.stationId];
         if (!from || !to) continue;
 
-        const isRun = step.lineId === null;
-        const lineColor = step.lineId ? (lines[step.lineId]?.color ?? '#7ec8e3') : '#f0c060';
+        const isRun = toStep.lineId === null;
+        const lineColor = toStep.lineId ? (lines[toStep.lineId]?.color ?? '#7ec8e3') : '#f0c060';
 
         ctx.strokeStyle = lineColor;
         ctx.lineWidth = 3;
@@ -486,28 +477,7 @@ export function GraphCanvas() {
       if (mode === 'pathfinder') {
         const hit = getStationAtPoint(x, y);
         if (!hit) return;
-
-        if (currentRoute.length === 0) {
-          addRouteStep(hit, { type: 'run', edge: { id: '', from: hit, to: hit, timeMin: 0, bidirectional: false } });
-          return;
-        }
-
-        const lastStep = currentRoute[currentRoute.length - 1];
-        const fromStationId = lastStep.stationId;
-        if (hit === fromStationId) return;
-
-        const graphState = { stations, lines, runEdges, transfers };
-        const connections = getConnectionsBetween(graphState, fromStationId, hit);
-
-        if (connections.length === 0) return;
-        if (connections.length === 1) {
-          addRouteStep(hit, connections[0].type === 'line'
-            ? { type: 'line', lineId: connections[0].lineId, fromIdx: connections[0].fromIdx, toIdx: connections[0].toIdx }
-            : { type: 'run', edge: connections[0].edge }
-          );
-        } else {
-          setPickerState({ toStationId: hit, connections });
-        }
+        addPathfinderWaypoint(hit);
         return;
       }
 
@@ -555,7 +525,7 @@ export function GraphCanvas() {
         }
       }
     },
-    [mode, selectedTool, stations, lines, runEdges, transfers, selectedStationIds, currentRoute, addStation, setSelectedStationIds, setSelectedLineId, setSelectedRunEdgeId, addRouteStep]
+    [mode, selectedTool, stations, lines, runEdges, selectedStationIds, addStation, setSelectedStationIds, setSelectedLineId, setSelectedRunEdgeId, addPathfinderWaypoint]
   );
 
   const handleMouseMove = useCallback(
@@ -676,8 +646,7 @@ export function GraphCanvas() {
         onContextMenu={handleContextMenu}
       />
       <div style={styles.hint}>
-        {mode === 'pathfinder' && currentRoute.length === 0 && 'Click a station to start your route'}
-        {mode === 'pathfinder' && currentRoute.length > 0 && 'Click a connected station to add to route'}
+        {mode === 'pathfinder' && 'Click stations in order to create waypoints'}
         {mode === 'builder' && selectedTool === 'addStation' && 'Click on canvas to place a station'}
         {mode === 'builder' && selectedTool === 'select' && 'Scroll to zoom • Ctrl+drag or middle-drag to pan • Double-click empty to reset zoom'}
         {mode === 'builder' && selectedTool === 'addLine' && 'Click stations in order to build a line (2+ required), then configure in the panel'}
@@ -689,20 +658,6 @@ export function GraphCanvas() {
           y={rightClickMenu.y}
           stationId={rightClickMenu.stationId}
           onClose={() => setRightClickMenu(null)}
-        />
-      )}
-      {pickerState && (
-        <ConnectionPicker
-          toStationId={pickerState.toStationId}
-          connections={pickerState.connections}
-          onPick={(conn) => {
-            const choice = conn.type === 'line'
-              ? { type: 'line' as const, lineId: conn.lineId, fromIdx: conn.fromIdx, toIdx: conn.toIdx }
-              : { type: 'run' as const, edge: conn.edge };
-            addRouteStep(pickerState.toStationId, choice);
-            setPickerState(null);
-          }}
-          onCancel={() => setPickerState(null)}
         />
       )}
     </div>

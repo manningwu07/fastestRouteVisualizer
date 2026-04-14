@@ -6,10 +6,14 @@ export interface Station {
   agencies: string[];  // supports multiple agencies per station
 }
 
-export interface LineSchedule {
+export interface ScheduleWindow {
   firstDeparture: number;  // minutes since midnight, departure from FIRST stop in this direction
   lastDeparture: number;
   headwayMin: number;
+}
+
+export interface LineSchedule {
+  windows: ScheduleWindow[];
 }
 
 export interface TransitLine {

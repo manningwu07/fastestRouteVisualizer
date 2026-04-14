@@ -14,7 +14,7 @@ export function StationList() {
     setSelectedLineId,
     setSelectedRunEdgeId,
     setSelectedTool,
-    addRouteStep,
+    addPathfinderWaypoint,
   } = useStore();
 
   const [collapsed, setCollapsed] = useState(false);
@@ -107,9 +107,7 @@ export function StationList() {
       setSelectedRunEdgeId(null);
       setSelectedTool('select');
     } else if (mode === 'pathfinder') {
-      if (currentRoute.length === 0) {
-        addRouteStep(stationId, { type: 'run', edge: { id: '', from: stationId, to: stationId, timeMin: 0, bidirectional: false } });
-      }
+      addPathfinderWaypoint(stationId);
     }
   }
 

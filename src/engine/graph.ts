@@ -149,19 +149,19 @@ export function computeStepTiming(
 ): RouteStep {
   if (connection.type === 'run') {
     const edge = connection.edge;
-    const arriveAt = currentTime;
+    const arrivalAtNext = currentTime + edge.timeMin;
     const waitTime = 0;
     const departAt = currentTime;
     const travelTime = edge.timeMin;
 
     return {
-      stationId: fromStationId,
+      stationId: toStationId,
       lineId: null,
-      arriveAt,
+      arriveAt: arrivalAtNext,
       waitTime,
       departAt,
       travelTime,
-      cumulativeMin: currentTime + travelTime,
+      cumulativeMin: arrivalAtNext,
     };
   }
 
@@ -225,9 +225,9 @@ export function computeStepTiming(
   const arrivalAtNext = departAt + travelTime;
 
   return {
-    stationId: fromStationId,
+    stationId: toStationId,
     lineId,
-    arriveAt: currentTime,
+    arriveAt: arrivalAtNext,
     waitTime,
     departAt,
     travelTime,

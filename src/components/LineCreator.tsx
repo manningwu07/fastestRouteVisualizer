@@ -1,7 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../state/store.js';
 import { ColorPicker, PRESET_COLORS } from './ColorPicker.js';
-import type { LineSchedule } from '../engine/types.js';
+import type { LineSchedule, ScheduleWindow } from '../engine/types.js';
+
+const DEFAULT_WINDOW: ScheduleWindow = {
+  firstDeparture: 360,
+  lastDeparture: 1380,
+  headwayMin: 10,
+};
+const MAX_WINDOWS = 8;
+
+function copyWindows(windows: ScheduleWindow[]): ScheduleWindow[] {
+  return windows.map(w => ({ ...w }));
+}
 
 export function LineCreator() {
   const { stations, selectedStationIds, lines, addLine, setSelectedTool, setSelectedStationIds } = useStore();
@@ -21,18 +32,16 @@ export function LineCreator() {
   const [syncReverseOffsets, setSyncReverseOffsets] = useState(true);
   const [bidirectional, setBidirectional] = useState(true);
 
-  // Forward schedule
-  const [fwdFirst, setFwdFirst] = useState(360);   // 6:00
-  const [fwdLast, setFwdLast] = useState(1380);    // 23:00
-  const [fwdHeadway, setFwdHeadway] = useState<number | null>(null);
-
-  // Reverse schedule (mirrors forward by default)
-  const [revFirst, setRevFirst] = useState(360);
-  const [revLast, setRevLast] = useState(1380);
-  const [revHeadway, setRevHeadway] = useState<number | null>(null);
+  const [fwdWindows, setFwdWindows] = useState<ScheduleWindow[]>([{ ...DEFAULT_WINDOW }]);
+  const [revWindows, setRevWindows] = useState<ScheduleWindow[]>([{ ...DEFAULT_WINDOW }]);
+  const [fwdWindowIdx, setFwdWindowIdx] = useState(0);
+  const [revWindowIdx, setRevWindowIdx] = useState(0);
 
   // selectedStationIds already preserves insertion order (see GraphCanvas handleMouseDown)
   const selectedStations = selectedStationIds.map(id => stations[id]).filter(Boolean);
+
+  const activeFwdWindow = fwdWindows[fwdWindowIdx] ?? fwdWindows[0] ?? DEFAULT_WINDOW;
+  const activeRevWindow = revWindows[revWindowIdx] ?? revWindows[0] ?? DEFAULT_WINDOW;
 
   useEffect(() => {
     // Adjust travel times array when selection changes
@@ -53,13 +62,22 @@ export function LineCreator() {
     });
   }, [selectedStationIds]);
 
-  // When bidirectional is first checked, copy forward values into reverse
+  // Keep selected tab indices valid when window arrays change
+  useEffect(() => {
+    if (fwdWindowIdx >= fwdWindows.length) setFwdWindowIdx(Math.max(0, fwdWindows.length - 1));
+  }, [fwdWindowIdx, fwdWindows.length]);
+
+  useEffect(() => {
+    if (revWindowIdx >= revWindows.length) setRevWindowIdx(Math.max(0, revWindows.length - 1));
+  }, [revWindowIdx, revWindows.length]);
+
+  // When bidirectional is checked, copy forward windows into reverse windows
   function handleBidirectionalChange(checked: boolean) {
     setBidirectional(checked);
     if (checked) {
-      setRevFirst(fwdFirst);
-      setRevLast(fwdLast);
-      setRevHeadway(fwdHeadway);
+      const copied = copyWindows(fwdWindows.length > 0 ? fwdWindows : [{ ...DEFAULT_WINDOW }]);
+      setRevWindows(copied);
+      setRevWindowIdx(Math.min(revWindowIdx, copied.length - 1));
     }
   }
 
@@ -74,6 +92,48 @@ export function LineCreator() {
     return (h || 0) * 60 + (m || 0);
   }
 
+  function updateFwdWindow(updates: Partial<ScheduleWindow>) {
+    setFwdWindows(prev => prev.map((w, i) => (i === fwdWindowIdx ? { ...w, ...updates } : w)));
+  }
+
+  function updateRevWindow(updates: Partial<ScheduleWindow>) {
+    setRevWindows(prev => prev.map((w, i) => (i === revWindowIdx ? { ...w, ...updates } : w)));
+  }
+
+  function addFwdWindow() {
+    setFwdWindows(prev => {
+      if (prev.length >= MAX_WINDOWS) return prev;
+      const base = prev[fwdWindowIdx] ?? DEFAULT_WINDOW;
+      return [...prev, { ...base }];
+    });
+    setFwdWindowIdx(fwdWindows.length);
+  }
+
+  function removeFwdWindow(idx: number) {
+    setFwdWindows(prev => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((_, i) => i !== idx);
+    });
+    setFwdWindowIdx(prev => (idx < prev ? prev - 1 : prev));
+  }
+
+  function addRevWindow() {
+    setRevWindows(prev => {
+      if (prev.length >= MAX_WINDOWS) return prev;
+      const base = prev[revWindowIdx] ?? DEFAULT_WINDOW;
+      return [...prev, { ...base }];
+    });
+    setRevWindowIdx(revWindows.length);
+  }
+
+  function removeRevWindow(idx: number) {
+    setRevWindows(prev => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((_, i) => i !== idx);
+    });
+    setRevWindowIdx(prev => (idx < prev ? prev - 1 : prev));
+  }
+
   function reverseSegmentAt(reverseIdx: number): number {
     const forwardSegmentIdx = travelTimes.length - 1 - reverseIdx;
     if (syncReverseOffsets) {
@@ -86,7 +146,7 @@ export function LineCreator() {
     const nextTime = parseTime(timeValue);
 
     if (idx === 0) {
-      setFwdFirst(nextTime);
+      updateFwdWindow({ firstDeparture: nextTime });
       return;
     }
 
@@ -103,7 +163,7 @@ export function LineCreator() {
     const nextTime = parseTime(timeValue);
 
     if (reverseIdx === 0) {
-      setRevFirst(nextTime);
+      updateRevWindow({ firstDeparture: nextTime });
       return;
     }
 
@@ -129,7 +189,7 @@ export function LineCreator() {
 
   // Compute cumulative departure time at each stop index for display (forward)
   function depTimeAtStop(idx: number): string {
-    let t = fwdFirst;
+    let t = activeFwdWindow.firstDeparture;
     for (let i = 0; i < idx; i++) {
       t += travelTimes[i] ?? 5;
     }
@@ -139,7 +199,7 @@ export function LineCreator() {
   // Compute cumulative departure time at each stop index for display (reverse)
   // reverseIdx 0 = last stop, reverseIdx 1 = second-to-last, etc.
   function revDepTimeAtStop(reverseIdx: number): string {
-    let t = revFirst;
+    let t = activeRevWindow.firstDeparture;
     for (let i = 0; i < reverseIdx; i++) {
       t += reverseSegmentAt(i);
     }
@@ -151,13 +211,21 @@ export function LineCreator() {
     if (!lineName.trim()) return;
 
     const forwardSchedule: LineSchedule = {
-      firstDeparture: fwdFirst,
-      lastDeparture: fwdLast,
-      headwayMin: Math.max(1, fwdHeadway ?? 10),
+      windows: fwdWindows.map(w => ({
+        firstDeparture: w.firstDeparture,
+        lastDeparture: w.lastDeparture,
+        headwayMin: Math.max(1, w.headwayMin),
+      })),
     };
 
     const reverseSchedule: LineSchedule | undefined = bidirectional
-      ? { firstDeparture: revFirst, lastDeparture: revLast, headwayMin: Math.max(1, revHeadway ?? fwdHeadway ?? 10) }
+      ? {
+          windows: revWindows.map((w, idx) => ({
+            firstDeparture: w.firstDeparture,
+            lastDeparture: w.lastDeparture,
+            headwayMin: Math.max(1, w.headwayMin || fwdWindows[idx]?.headwayMin || 10),
+          })),
+        }
       : undefined;
 
     addLine({
@@ -180,8 +248,10 @@ export function LineCreator() {
     setTravelTimes([]);
     setReverseTravelTimes([]);
     setSyncReverseOffsets(true);
-    setFwdHeadway(null);
-    setRevHeadway(null);
+    setFwdWindows([{ ...DEFAULT_WINDOW }]);
+    setRevWindows([{ ...DEFAULT_WINDOW }]);
+    setFwdWindowIdx(0);
+    setRevWindowIdx(0);
     setBidirectional(true);
     setSelectedStationIds([]);
     setSelectedTool('select');
@@ -250,6 +320,19 @@ export function LineCreator() {
         <div style={styles.schedSectionHeader}>
           <span style={{ color: color }}>▶</span> Forward
         </div>
+        <div style={styles.windowTabsRow}>
+          {fwdWindows.map((_, i) => (
+            <button
+              key={`fwd-window-${i}`}
+              style={{ ...styles.windowTabBtn, ...(i === fwdWindowIdx ? styles.windowTabBtnActive : {}) }}
+              onClick={() => setFwdWindowIdx(i)}
+            >
+              W{i + 1}
+            </button>
+          ))}
+          <button style={styles.smallActionBtn} onClick={addFwdWindow} disabled={fwdWindows.length >= MAX_WINDOWS}>+ Window</button>
+          <button style={styles.smallDangerBtn} onClick={() => removeFwdWindow(fwdWindowIdx)} disabled={fwdWindows.length <= 1}>- Window</button>
+        </div>
         <div style={styles.stopList}>
           {selectedStations.map((st, i) => (
             <div key={st.id} style={styles.stopRow}>
@@ -292,16 +375,16 @@ export function LineCreator() {
           <input
             type="time"
             style={styles.timeInput}
-            value={formatTime(fwdFirst)}
-            onChange={e => setFwdFirst(parseTime(e.target.value))}
+            value={formatTime(activeFwdWindow.firstDeparture)}
+            onChange={e => updateFwdWindow({ firstDeparture: parseTime(e.target.value) })}
             onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
           />
           <span style={styles.schedLabel}>Last dep</span>
           <input
             type="time"
             style={styles.timeInput}
-            value={formatTime(fwdLast)}
-            onChange={e => setFwdLast(parseTime(e.target.value))}
+            value={formatTime(activeFwdWindow.lastDeparture)}
+            onChange={e => updateFwdWindow({ lastDeparture: parseTime(e.target.value) })}
             onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
           />
           <span style={styles.schedLabel}>Headway</span>
@@ -310,11 +393,11 @@ export function LineCreator() {
               type="text"
               inputMode="numeric"
               style={styles.smallInput}
-              value={fwdHeadway ?? ''}
+              value={activeFwdWindow.headwayMin}
               placeholder=""
               onChange={e => {
                 const raw = e.target.value.replace(/\D/g, '');
-                setFwdHeadway(raw === '' ? null : Math.max(1, parseInt(raw, 10)));
+                updateFwdWindow({ headwayMin: Math.max(1, parseInt(raw || '1', 10)) });
               }}
               onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             />
@@ -328,6 +411,19 @@ export function LineCreator() {
         <div style={styles.schedSection}>
           <div style={styles.schedSectionHeader}>
             <span style={{ color: color }}>◀</span> Reverse
+          </div>
+          <div style={styles.windowTabsRow}>
+            {revWindows.map((_, i) => (
+              <button
+                key={`rev-window-${i}`}
+                style={{ ...styles.windowTabBtn, ...(i === revWindowIdx ? styles.windowTabBtnActive : {}) }}
+                onClick={() => setRevWindowIdx(i)}
+              >
+                W{i + 1}
+              </button>
+            ))}
+            <button style={styles.smallActionBtn} onClick={addRevWindow} disabled={revWindows.length >= MAX_WINDOWS}>+ Window</button>
+            <button style={styles.smallDangerBtn} onClick={() => removeRevWindow(revWindowIdx)} disabled={revWindows.length <= 1}>- Window</button>
           </div>
           <label style={styles.syncRow}>
             <input
@@ -396,16 +492,16 @@ export function LineCreator() {
             <input
               type="time"
               style={styles.timeInput}
-              value={formatTime(revFirst)}
-              onChange={e => setRevFirst(parseTime(e.target.value))}
+              value={formatTime(activeRevWindow.firstDeparture)}
+              onChange={e => updateRevWindow({ firstDeparture: parseTime(e.target.value) })}
               onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             />
             <span style={styles.schedLabel}>Last dep</span>
             <input
               type="time"
               style={styles.timeInput}
-              value={formatTime(revLast)}
-              onChange={e => setRevLast(parseTime(e.target.value))}
+              value={formatTime(activeRevWindow.lastDeparture)}
+              onChange={e => updateRevWindow({ lastDeparture: parseTime(e.target.value) })}
               onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             />
             <span style={styles.schedLabel}>Headway</span>
@@ -414,11 +510,11 @@ export function LineCreator() {
                 type="text"
                 inputMode="numeric"
                 style={styles.smallInput}
-                value={revHeadway ?? ''}
+                value={activeRevWindow.headwayMin}
                 placeholder=""
                 onChange={e => {
                   const raw = e.target.value.replace(/\D/g, '');
-                  setRevHeadway(raw === '' ? null : Math.max(1, parseInt(raw, 10)));
+                  updateRevWindow({ headwayMin: Math.max(1, parseInt(raw || '1', 10)) });
                 }}
                 onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
               />
@@ -490,14 +586,6 @@ const styles: Record<string, React.CSSProperties> = {
     width: 52,
     outline: 'none',
   },
-  readonlyTime: {
-    color: '#555',
-    fontFamily: 'monospace',
-    fontSize: 12,
-    padding: '2px 6px',
-    minWidth: 28,
-    textAlign: 'right' as const,
-  },
   timeInput: {
     background: '#1a1a2e',
     border: '1px solid #333',
@@ -532,6 +620,48 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 6,
   },
+  windowTabsRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    flexWrap: 'wrap' as const,
+    marginBottom: 2,
+  },
+  windowTabBtn: {
+    border: '1px solid #335',
+    borderRadius: 3,
+    background: '#1a1a2e',
+    color: '#999',
+    padding: '2px 8px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    cursor: 'pointer',
+  },
+  windowTabBtnActive: {
+    color: '#7ec8e3',
+    borderColor: '#3a5f7a',
+    background: '#1e2a3a',
+  },
+  smallActionBtn: {
+    border: '1px solid #3a5f7a',
+    borderRadius: 3,
+    background: '#1e2a3a',
+    color: '#7ec8e3',
+    padding: '2px 8px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    cursor: 'pointer',
+  },
+  smallDangerBtn: {
+    border: '1px solid #6a3030',
+    borderRadius: 3,
+    background: '#2a1a1a',
+    color: '#e8a0a0',
+    padding: '2px 8px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    cursor: 'pointer',
+  },
   stopList: {
     display: 'flex',
     flexDirection: 'column',
@@ -556,12 +686,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#c8c8e0',
     minWidth: 60,
     flex: 1,
-  },
-  stopTime: {
-    fontFamily: 'monospace',
-    fontSize: 11,
-    color: '#7ec8e3',
-    minWidth: 44,
   },
   stopTimeInput: {
     minWidth: 96,

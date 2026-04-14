@@ -1,7 +1,26 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../state/store.js';
 import { ColorPicker } from './ColorPicker.js';
-import type { LineSchedule } from '../engine/types.js';
+import { NumericInput } from './NumericInput.js';
+import type { LineSchedule, ScheduleWindow } from '../engine/types.js';
+
+const DEFAULT_WINDOW: ScheduleWindow = {
+  firstDeparture: 360,
+  lastDeparture: 1380,
+  headwayMin: 10,
+};
+const MAX_WINDOWS = 8;
+const INSERT_AT_START = '__insert_start__';
+const INSERT_AT_END = '__insert_end__';
+
+function sanitizeWindows(windows: ScheduleWindow[] | undefined): ScheduleWindow[] {
+  if (!windows || windows.length === 0) return [{ ...DEFAULT_WINDOW }];
+  return windows.map(w => ({
+    firstDeparture: w.firstDeparture,
+    lastDeparture: w.lastDeparture,
+    headwayMin: Math.max(1, w.headwayMin),
+  }));
+}
 
 export function LineEditor() {
   const {
@@ -19,18 +38,18 @@ export function LineEditor() {
   const [agency, setAgency] = useState('');
   const [travelTimes, setTravelTimes] = useState<number[]>([]);
 
-  // Forward schedule
-  const [fwdFirst, setFwdFirst] = useState(360);
-  const [fwdLast, setFwdLast] = useState(1380);
-  const [fwdHeadway, setFwdHeadway] = useState(10);
-
-  // Reverse schedule
-  const [revFirst, setRevFirst] = useState(360);
-  const [revLast, setRevLast] = useState(1380);
-  const [revHeadway, setRevHeadway] = useState(10);
+  const [fwdWindows, setFwdWindows] = useState<ScheduleWindow[]>([{ ...DEFAULT_WINDOW }]);
+  const [revWindows, setRevWindows] = useState<ScheduleWindow[]>([{ ...DEFAULT_WINDOW }]);
+  const [fwdWindowIdx, setFwdWindowIdx] = useState(0);
+  const [revWindowIdx, setRevWindowIdx] = useState(0);
 
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmRemoveStop, setConfirmRemoveStop] = useState<string | null>(null);
+  const [newStopId, setNewStopId] = useState('');
+  const [insertAfterStopId, setInsertAfterStopId] = useState(INSERT_AT_END);
+
+  const activeFwdWindow = fwdWindows[fwdWindowIdx] ?? fwdWindows[0] ?? DEFAULT_WINDOW;
+  const activeRevWindow = revWindows[revWindowIdx] ?? revWindows[0] ?? DEFAULT_WINDOW;
 
   // Sync local state when selected line changes
   useEffect(() => {
@@ -38,23 +57,24 @@ export function LineEditor() {
       setColor(line.color);
       setAgency(line.agency);
       setTravelTimes([...line.travelTimes]);
-      setFwdFirst(line.forwardSchedule.firstDeparture);
-      setFwdLast(line.forwardSchedule.lastDeparture);
-      setFwdHeadway(line.forwardSchedule.headwayMin);
-      if (line.reverseSchedule) {
-        setRevFirst(line.reverseSchedule.firstDeparture);
-        setRevLast(line.reverseSchedule.lastDeparture);
-        setRevHeadway(line.reverseSchedule.headwayMin);
-      } else {
-        // Default reverse to same as forward when no reverseSchedule
-        setRevFirst(line.forwardSchedule.firstDeparture);
-        setRevLast(line.forwardSchedule.lastDeparture);
-        setRevHeadway(line.forwardSchedule.headwayMin);
-      }
+      setFwdWindows(sanitizeWindows(line.forwardSchedule.windows));
+      setRevWindows(sanitizeWindows((line.reverseSchedule ?? line.forwardSchedule).windows));
+      setFwdWindowIdx(0);
+      setRevWindowIdx(0);
       setConfirmDelete(false);
       setConfirmRemoveStop(null);
+      setNewStopId('');
+      setInsertAfterStopId(INSERT_AT_END);
     }
-  }, [selectedLineId]);
+  }, [selectedLineId, line]);
+
+  useEffect(() => {
+    if (fwdWindowIdx >= fwdWindows.length) setFwdWindowIdx(Math.max(0, fwdWindows.length - 1));
+  }, [fwdWindowIdx, fwdWindows.length]);
+
+  useEffect(() => {
+    if (revWindowIdx >= revWindows.length) setRevWindowIdx(Math.max(0, revWindows.length - 1));
+  }, [revWindowIdx, revWindows.length]);
 
   // Keyboard: Escape closes editor
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -79,15 +99,65 @@ export function LineEditor() {
     return (h || 0) * 60 + (m || 0);
   }
 
+  function updateFwdWindow(updates: Partial<ScheduleWindow>) {
+    setFwdWindows(prev => prev.map((w, i) => (i === fwdWindowIdx ? { ...w, ...updates } : w)));
+  }
+
+  function updateRevWindow(updates: Partial<ScheduleWindow>) {
+    setRevWindows(prev => prev.map((w, i) => (i === revWindowIdx ? { ...w, ...updates } : w)));
+  }
+
+  function addFwdWindow() {
+    setFwdWindows(prev => {
+      if (prev.length >= MAX_WINDOWS) return prev;
+      const base = prev[fwdWindowIdx] ?? DEFAULT_WINDOW;
+      return [...prev, { ...base }];
+    });
+    setFwdWindowIdx(fwdWindows.length);
+  }
+
+  function removeFwdWindow(idx: number) {
+    setFwdWindows(prev => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((_, i) => i !== idx);
+    });
+    setFwdWindowIdx(prev => (idx < prev ? prev - 1 : prev));
+  }
+
+  function addRevWindow() {
+    setRevWindows(prev => {
+      if (prev.length >= MAX_WINDOWS) return prev;
+      const base = prev[revWindowIdx] ?? DEFAULT_WINDOW;
+      return [...prev, { ...base }];
+    });
+    setRevWindowIdx(revWindows.length);
+  }
+
+  function removeRevWindow(idx: number) {
+    setRevWindows(prev => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((_, i) => i !== idx);
+    });
+    setRevWindowIdx(prev => (idx < prev ? prev - 1 : prev));
+  }
+
   function saveAll(overrides?: { color?: string }) {
     if (!selectedLineId) return;
     const forwardSchedule: LineSchedule = {
-      firstDeparture: fwdFirst,
-      lastDeparture: fwdLast,
-      headwayMin: fwdHeadway,
+      windows: fwdWindows.map(w => ({
+        firstDeparture: w.firstDeparture,
+        lastDeparture: w.lastDeparture,
+        headwayMin: Math.max(1, w.headwayMin),
+      })),
     };
     const reverseSchedule: LineSchedule | undefined = line.bidirectional
-      ? { firstDeparture: revFirst, lastDeparture: revLast, headwayMin: revHeadway }
+      ? {
+          windows: revWindows.map((w, idx) => ({
+            firstDeparture: w.firstDeparture,
+            lastDeparture: w.lastDeparture,
+            headwayMin: Math.max(1, w.headwayMin || fwdWindows[idx]?.headwayMin || 10),
+          })),
+        }
       : undefined;
 
     updateLine(selectedLineId, {
@@ -126,9 +196,78 @@ export function LineEditor() {
     setSelectedLineId(null);
   }
 
+  function handleForwardStopTimeChange(idx: number, timeValue: string) {
+    const nextTime = parseTime(timeValue);
+
+    if (idx === 0) {
+      updateFwdWindow({ firstDeparture: nextTime });
+      return;
+    }
+
+    const prevTime = parseTime(depTimeAtStop(idx - 1));
+    const segmentMin = Math.max(1, nextTime - prevTime);
+    setTravelTimes(prev => {
+      const next = [...prev];
+      next[idx - 1] = segmentMin;
+      return next;
+    });
+  }
+
+  function handleReverseStopTimeChange(reverseIdx: number, timeValue: string) {
+    const nextTime = parseTime(timeValue);
+
+    if (reverseIdx === 0) {
+      updateRevWindow({ firstDeparture: nextTime });
+      return;
+    }
+
+    const prevTime = parseTime(revDepTimeAtStop(reverseIdx - 1));
+    const segmentMin = Math.max(1, nextTime - prevTime);
+    const forwardSegmentIdx = travelTimes.length - reverseIdx;
+
+    setTravelTimes(prev => {
+      const next = [...prev];
+      next[forwardSegmentIdx] = segmentMin;
+      return next;
+    });
+  }
+
+  function handleAddStop() {
+    if (!selectedLineId || !newStopId) return;
+    if (line.stops.includes(newStopId)) return;
+
+    const nextStops = [...line.stops];
+    const nextTimes = [...line.travelTimes];
+
+    if (insertAfterStopId === INSERT_AT_START) {
+      nextStops.unshift(newStopId);
+      nextTimes.unshift(5);
+    } else if (insertAfterStopId === INSERT_AT_END) {
+      nextStops.push(newStopId);
+      nextTimes.push(5);
+    } else {
+      const anchorIdx = line.stops.indexOf(insertAfterStopId);
+      if (anchorIdx < 0 || anchorIdx >= line.stops.length - 1) {
+        nextStops.push(newStopId);
+        nextTimes.push(5);
+      } else {
+        nextStops.splice(anchorIdx + 1, 0, newStopId);
+        const existingSegment = Math.max(1, nextTimes[anchorIdx] ?? 5);
+        const firstLeg = Math.max(1, Math.floor(existingSegment / 2));
+        const secondLeg = Math.max(1, existingSegment - firstLeg);
+        nextTimes.splice(anchorIdx, 1, firstLeg, secondLeg);
+      }
+    }
+
+    updateLine(selectedLineId, { stops: nextStops, travelTimes: nextTimes });
+    setTravelTimes(nextTimes);
+    setNewStopId('');
+    setInsertAfterStopId(INSERT_AT_END);
+  }
+
   // Compute absolute departure time at stop index for display
   function depTimeAtStop(idx: number): string {
-    let t = fwdFirst;
+    let t = activeFwdWindow.firstDeparture;
     for (let i = 0; i < idx; i++) {
       t += travelTimes[i] ?? 0;
     }
@@ -136,7 +275,7 @@ export function LineEditor() {
   }
 
   function revDepTimeAtStop(reverseIdx: number): string {
-    let t = revFirst;
+    let t = activeRevWindow.firstDeparture;
     for (let i = 0; i < reverseIdx; i++) {
       t += travelTimes[travelTimes.length - 1 - i] ?? 0;
     }
@@ -144,6 +283,9 @@ export function LineEditor() {
   }
 
   const reversedStops = [...line.stops].reverse();
+  const candidateStations = Object.values(stations)
+    .filter(st => !line.stops.includes(st.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div style={styles.container}>
@@ -167,10 +309,59 @@ export function LineEditor() {
         placeholder="Metro, Bus Co…"
       />
 
+      <div style={styles.addNodeBox}>
+        <div style={styles.addNodeTitle}>Add Node</div>
+        <div style={styles.addNodeRow}>
+          <select
+            style={styles.selectInput}
+            value={newStopId}
+            onChange={e => setNewStopId(e.target.value)}
+          >
+            <option value="">Select station…</option>
+            {candidateStations.map(st => (
+              <option key={st.id} value={st.id}>{st.name}</option>
+            ))}
+          </select>
+          <select
+            style={styles.selectInput}
+            value={insertAfterStopId}
+            onChange={e => setInsertAfterStopId(e.target.value)}
+          >
+            <option value={INSERT_AT_START}>At start</option>
+            {line.stops.map(stopId => (
+              <option key={stopId} value={stopId}>
+                After {stations[stopId]?.name ?? stopId}
+              </option>
+            ))}
+            <option value={INSERT_AT_END}>At end</option>
+          </select>
+          <button
+            style={styles.addNodeBtn}
+            onClick={handleAddStop}
+            disabled={!newStopId}
+          >
+            + Add
+          </button>
+        </div>
+      </div>
+
       {/* Forward stops & travel times */}
       <div style={styles.schedSection}>
         <div style={styles.schedSectionHeader}>
-          <span style={{ color: line.color }}>▶</span> Forward — Stops & Travel Times
+          <span style={{ color: line.color }}>▶</span> Forward - Stops & Travel Times
+        </div>
+        <div style={styles.windowTabsRow}>
+          {fwdWindows.map((_, i) => (
+            <button
+              key={`fwd-window-${i}`}
+              style={{ ...styles.windowTabBtn, ...(i === fwdWindowIdx ? styles.windowTabBtnActive : {}) }}
+              onClick={() => setFwdWindowIdx(i)}
+            >
+              W{i + 1}
+            </button>
+          ))}
+          <button style={styles.smallActionBtn} onClick={addFwdWindow} disabled={fwdWindows.length >= MAX_WINDOWS}>+ Window</button>
+          <button style={styles.smallDangerBtn} onClick={() => removeFwdWindow(fwdWindowIdx)} disabled={fwdWindows.length <= 1}>- Window</button>
         </div>
         <div style={styles.stopList}>
           {line.stops.map((stopId, i) => {
@@ -181,7 +372,14 @@ export function LineEditor() {
                 <div style={styles.stopRow}>
                   <span style={{ ...styles.stopDot, background: line.color }} />
                   <span style={styles.stopName}>{st?.name ?? stopId}</span>
-                  <span style={styles.stopTime}>{depTimeAtStop(i)}</span>
+                  <input
+                    type="time"
+                    style={{ ...styles.timeInput, ...styles.stopTimeInput }}
+                    value={depTimeAtStop(i)}
+                    onChange={e => handleForwardStopTimeChange(i, e.target.value)}
+                    onBlur={saveAll}
+                    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                  />
                   <button
                     style={styles.removeStopBtn}
                     onClick={() => handleRemoveStop(stopId)}
@@ -204,22 +402,19 @@ export function LineEditor() {
                 {nextSt && (
                   <div style={styles.travelSegment}>
                     <span style={styles.travelLabel}>{st?.name ?? stopId} → {nextSt.name}:</span>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      style={styles.smallInput}
+                    <NumericInput
                       value={travelTimes[i] ?? 5}
-                      onChange={e => {
-                        const raw = e.target.value.replace(/\D/g, '');
-                        const v = parseInt(raw) || 1;
+                      onChange={v => {
                         setTravelTimes(prev => {
                           const next = [...prev];
                           next[i] = v;
                           return next;
                         });
                       }}
+                      onSubmit={saveAll}
                       onBlur={saveAll}
-                      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                      min={1}
+                      style={styles.smallInput}
                     />
                     <span style={styles.unit}>min</span>
                   </div>
@@ -234,8 +429,8 @@ export function LineEditor() {
           <input
             type="time"
             style={styles.timeInput}
-            value={formatTime(fwdFirst)}
-            onChange={e => setFwdFirst(parseTime(e.target.value))}
+            value={formatTime(activeFwdWindow.firstDeparture)}
+            onChange={e => updateFwdWindow({ firstDeparture: parseTime(e.target.value) })}
             onBlur={saveAll}
             onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
           />
@@ -243,8 +438,8 @@ export function LineEditor() {
           <input
             type="time"
             style={styles.timeInput}
-            value={formatTime(fwdLast)}
-            onChange={e => setFwdLast(parseTime(e.target.value))}
+            value={formatTime(activeFwdWindow.lastDeparture)}
+            onChange={e => updateFwdWindow({ lastDeparture: parseTime(e.target.value) })}
             onBlur={saveAll}
             onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
           />
@@ -254,10 +449,10 @@ export function LineEditor() {
               type="text"
               inputMode="numeric"
               style={styles.smallInput}
-              value={fwdHeadway}
+              value={activeFwdWindow.headwayMin}
               onChange={e => {
                 const raw = e.target.value.replace(/\D/g, '');
-                setFwdHeadway(parseInt(raw) || 1);
+                updateFwdWindow({ headwayMin: parseInt(raw) || 1 });
               }}
               onBlur={saveAll}
               onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
@@ -273,6 +468,19 @@ export function LineEditor() {
           <div style={styles.schedSectionHeader}>
             <span style={{ color: line.color }}>◀</span> Reverse Schedule
           </div>
+          <div style={styles.windowTabsRow}>
+            {revWindows.map((_, i) => (
+              <button
+                key={`rev-window-${i}`}
+                style={{ ...styles.windowTabBtn, ...(i === revWindowIdx ? styles.windowTabBtnActive : {}) }}
+                onClick={() => setRevWindowIdx(i)}
+              >
+                W{i + 1}
+              </button>
+            ))}
+            <button style={styles.smallActionBtn} onClick={addRevWindow} disabled={revWindows.length >= MAX_WINDOWS}>+ Window</button>
+            <button style={styles.smallDangerBtn} onClick={() => removeRevWindow(revWindowIdx)} disabled={revWindows.length <= 1}>- Window</button>
+          </div>
           <div style={styles.stopList}>
             {reversedStops.map((stopId, i) => {
               const st = stations[stopId];
@@ -280,7 +488,14 @@ export function LineEditor() {
                 <div key={stopId} style={styles.stopRow}>
                   <span style={{ ...styles.stopDot, background: line.color }} />
                   <span style={styles.stopName}>{st?.name ?? stopId}</span>
-                  <span style={styles.stopTime}>{revDepTimeAtStop(i)}</span>
+                  <input
+                    type="time"
+                    style={{ ...styles.timeInput, ...styles.stopTimeInput }}
+                    value={revDepTimeAtStop(i)}
+                    onChange={e => handleReverseStopTimeChange(i, e.target.value)}
+                    onBlur={saveAll}
+                    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                  />
                   {i < reversedStops.length - 1 && (
                     <div style={styles.travelSegment}>
                       <span style={styles.readonlyTime}>
@@ -299,8 +514,8 @@ export function LineEditor() {
             <input
               type="time"
               style={styles.timeInput}
-              value={formatTime(revFirst)}
-              onChange={e => setRevFirst(parseTime(e.target.value))}
+              value={formatTime(activeRevWindow.firstDeparture)}
+              onChange={e => updateRevWindow({ firstDeparture: parseTime(e.target.value) })}
               onBlur={saveAll}
               onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             />
@@ -308,8 +523,8 @@ export function LineEditor() {
             <input
               type="time"
               style={styles.timeInput}
-              value={formatTime(revLast)}
-              onChange={e => setRevLast(parseTime(e.target.value))}
+              value={formatTime(activeRevWindow.lastDeparture)}
+              onChange={e => updateRevWindow({ lastDeparture: parseTime(e.target.value) })}
               onBlur={saveAll}
               onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             />
@@ -319,10 +534,10 @@ export function LineEditor() {
                 type="text"
                 inputMode="numeric"
                 style={styles.smallInput}
-                value={revHeadway}
+                value={activeRevWindow.headwayMin}
                 onChange={e => {
                   const raw = e.target.value.replace(/\D/g, '');
-                  setRevHeadway(parseInt(raw) || 1);
+                  updateRevWindow({ headwayMin: parseInt(raw) || 1 });
                 }}
                 onBlur={saveAll}
                 onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
@@ -404,6 +619,50 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '4px 8px',
     outline: 'none',
   },
+  selectInput: {
+    background: '#1a1a2e',
+    border: '1px solid #333',
+    borderRadius: 3,
+    color: '#e8e8f0',
+    fontFamily: 'monospace',
+    fontSize: 12,
+    padding: '4px 8px',
+    outline: 'none',
+    minWidth: 0,
+    flex: 1,
+  },
+  addNodeBox: {
+    marginTop: 6,
+    background: '#101022',
+    border: '1px solid #262648',
+    borderRadius: 4,
+    padding: '8px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  addNodeTitle: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    color: '#8e8eb8',
+    fontWeight: 700,
+  },
+  addNodeRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap' as const,
+  },
+  addNodeBtn: {
+    border: '1px solid #3a5f7a',
+    borderRadius: 3,
+    background: '#1e2a3a',
+    color: '#7ec8e3',
+    padding: '4px 10px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    cursor: 'pointer',
+  },
   smallInput: {
     background: '#1a1a2e',
     border: '1px solid #333',
@@ -456,6 +715,48 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 6,
+  },
+  windowTabsRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    flexWrap: 'wrap' as const,
+    marginBottom: 2,
+  },
+  windowTabBtn: {
+    border: '1px solid #335',
+    borderRadius: 3,
+    background: '#1a1a2e',
+    color: '#999',
+    padding: '2px 8px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    cursor: 'pointer',
+  },
+  windowTabBtnActive: {
+    color: '#7ec8e3',
+    borderColor: '#3a5f7a',
+    background: '#1e2a3a',
+  },
+  smallActionBtn: {
+    border: '1px solid #3a5f7a',
+    borderRadius: 3,
+    background: '#1e2a3a',
+    color: '#7ec8e3',
+    padding: '2px 8px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    cursor: 'pointer',
+  },
+  smallDangerBtn: {
+    border: '1px solid #6a3030',
+    borderRadius: 3,
+    background: '#2a1a1a',
+    color: '#e8a0a0',
+    padding: '2px 8px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    cursor: 'pointer',
   },
   stopList: {
     display: 'flex',

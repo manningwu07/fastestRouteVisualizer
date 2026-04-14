@@ -7,38 +7,43 @@ function toHHMM(minutes: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+function toAMPM(minutes: number): string {
+  const totalMins = Math.floor(minutes);
+  const h24 = Math.floor(totalMins / 60) % 24;
+  const m = totalMins % 60;
+  const ampm = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 || 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+function parseHHMM(value: string): number {
+  const [h, m] = value.split(':').map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return 0;
+  return Math.max(0, Math.min(24 * 60 - 1, h * 60 + m));
+}
+
 export function PathfinderPanel() {
   const {
     stations,
     lines,
     currentRoute,
+    pathfinderWaypoints,
+    pathfinderSearchStartMin,
+    pathfinderSearchEndMin,
     routeStartTime,
     pathfinderSelectedStation,
-    setRouteStartTime,
-    undoLastStep,
     clearRoute,
     saveCurrentRoute,
-    addRouteStep,
+    setPathfinderSearchWindow,
+    addPathfinderWaypoint,
+    removePathfinderWaypoint,
+    clearPathfinderWaypoints,
+    solvePathfinderWaypoints,
+    showToast,
   } = useStore();
 
   const [saveNameInput, setSaveNameInput] = useState('');
   const [showSaveInput, setShowSaveInput] = useState(false);
-
-  const startHours = Math.floor(routeStartTime / 60);
-  const startMinutes = routeStartTime % 60;
-
-  function handleTimeChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const val = e.target.value; // "HH:MM"
-    const [h, m] = val.split(':').map(Number);
-    if (!isNaN(h) && !isNaN(m)) {
-      setRouteStartTime(h * 60 + m);
-    }
-  }
-
-  function handleStartAtStation(stationId: string) {
-    // Setting start: add first "zero step" at this station
-    addRouteStep(stationId, { type: 'run', edge: { id: '', from: stationId, to: stationId, timeMin: 0, bidirectional: false } });
-  }
 
   function handleSave() {
     if (!saveNameInput.trim()) return;
@@ -47,46 +52,104 @@ export function PathfinderPanel() {
     setShowSaveInput(false);
   }
 
+  async function handleCopySheets() {
+    if (currentRoute.length === 0) {
+      showToast('No solved route to copy');
+      return;
+    }
+    const names = currentRoute.map(step => stations[step.stationId]?.name ?? step.stationId);
+    const times = currentRoute.map((step, i) => toAMPM(i === 0 ? routeStartTime : step.arriveAt));
+    const tsv = `${names.join('\t')}\n${times.join('\t')}`;
+
+    try {
+      await navigator.clipboard.writeText(tsv);
+      showToast('Copied!');
+    } catch {
+      showToast('Copy failed');
+    }
+  }
+
   const hasRoute = currentRoute.length > 0;
   const lastStep = hasRoute ? currentRoute[currentRoute.length - 1] : null;
   const totalMin = hasRoute && lastStep ? lastStep.cumulativeMin - routeStartTime : 0;
+
+  function handleSearchStartChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setPathfinderSearchWindow(parseHHMM(e.target.value), pathfinderSearchEndMin);
+  }
+
+  function handleSearchEndChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setPathfinderSearchWindow(pathfinderSearchStartMin, parseHHMM(e.target.value));
+  }
 
   return (
     <div style={styles.panel}>
       <div style={styles.header}>Pathfinder</div>
 
-      {/* Start time */}
-      <div style={styles.section}>
-        <div style={styles.label}>Start Time</div>
-        <input
-          type="time"
-          value={`${String(startHours).padStart(2, '0')}:${String(startMinutes).padStart(2, '0')}`}
-          onChange={handleTimeChange}
-          style={styles.timeInput}
-        />
-      </div>
-
-      {/* Start station selector */}
-      {!hasRoute && (
+      {/* Calculated start time */}
+      {hasRoute && (
         <div style={styles.section}>
-          <div style={styles.label}>Start Station</div>
-          <div style={styles.hint}>Click a station on the canvas to start, or pick below:</div>
-          <div style={styles.stationList}>
-            {Object.values(stations).map(st => (
-              <button
-                key={st.id}
-                style={styles.stationBtn}
-                onClick={() => handleStartAtStation(st.id)}
-              >
-                {st.name}
-              </button>
-            ))}
-          </div>
-          {Object.keys(stations).length === 0 && (
-            <div style={styles.empty}>No stations yet. Build your graph first.</div>
-          )}
+          <div style={styles.label}>Start Time (Calculated)</div>
+          <div style={styles.readOnlyValue}>{toHHMM(routeStartTime)}</div>
         </div>
       )}
+
+      <div style={styles.section}>
+        <div style={styles.label}>Waypoint Order</div>
+        <div style={styles.hint}>Click stations on the canvas, or add from the list below, in the exact order you want to visit them.</div>
+        <div style={styles.waypointList}>
+          {pathfinderWaypoints.length === 0 && <div style={styles.empty}>No waypoints yet.</div>}
+          {pathfinderWaypoints.map((stationId, i) => (
+            <div key={`${stationId}-${i}`} style={styles.waypointRow}>
+              <span style={styles.stepNum}>{i + 1}</span>
+              <span style={styles.stepStation}>{stations[stationId]?.name ?? stationId}</span>
+              <button style={styles.removeBtn} onClick={() => removePathfinderWaypoint(i)}>x</button>
+            </div>
+          ))}
+        </div>
+        <div style={styles.stationList}>
+          {Object.values(stations).map(st => (
+            <button
+              key={st.id}
+              style={styles.stationBtn}
+              onClick={() => addPathfinderWaypoint(st.id)}
+            >
+              {st.name}
+            </button>
+          ))}
+        </div>
+        {Object.keys(stations).length === 0 && (
+          <div style={styles.empty}>No stations yet. Build your graph first.</div>
+        )}
+      </div>
+
+      <div style={styles.section}>
+        <div style={styles.label}>Start Time Search Window</div>
+        <div style={styles.timeRangeRow}>
+          <input
+            type="time"
+            value={toHHMM(pathfinderSearchStartMin)}
+            onChange={handleSearchStartChange}
+            style={styles.timeInput}
+          />
+          <span style={styles.timeRangeDash}>to</span>
+          <input
+            type="time"
+            value={toHHMM(pathfinderSearchEndMin)}
+            onChange={handleSearchEndChange}
+            style={styles.timeInput}
+          />
+        </div>
+        <div style={styles.hint}>Solver only brute-forces start times inside this window.</div>
+      </div>
+
+      <div style={styles.controls}>
+        <button style={styles.btnPrimary} onClick={solvePathfinderWaypoints}>
+          Solve Fastest Route
+        </button>
+        <button style={styles.btnDanger} onClick={clearPathfinderWaypoints}>
+          Clear Waypoints
+        </button>
+      </div>
 
       {/* Current route */}
       {hasRoute && (
@@ -122,11 +185,11 @@ export function PathfinderPanel() {
       {/* Controls */}
       {hasRoute && (
         <div style={styles.controls}>
-          <button style={styles.btnSecondary} onClick={undoLastStep}>
-            Undo Step
-          </button>
           <button style={styles.btnDanger} onClick={clearRoute}>
-            Clear
+            Clear Route
+          </button>
+          <button style={styles.btnSecondary} onClick={handleCopySheets}>
+            Copy Sheets Rows
           </button>
         </div>
       )}
@@ -159,14 +222,12 @@ export function PathfinderPanel() {
       )}
 
       {/* Pathfinder hint */}
-      {hasRoute && (
-        <div style={styles.hint}>
-          Click a reachable station on the canvas to add a step.
-          {pathfinderSelectedStation && (
-            <span> Current: <span style={{ color: '#7ec8e3' }}>{stations[pathfinderSelectedStation]?.name}</span></span>
-          )}
-        </div>
-      )}
+      <div style={styles.hint}>
+        Solver brute-forces start times across the day and picks the minimum total travel time for your waypoint order.
+        {pathfinderSelectedStation && (
+          <span> Current: <span style={{ color: '#7ec8e3' }}>{stations[pathfinderSelectedStation]?.name}</span></span>
+        )}
+      </div>
     </div>
   );
 }
@@ -202,12 +263,12 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#556',
     lineHeight: 1.5,
   },
-  timeInput: {
+  readOnlyValue: {
     background: '#1e1e38',
     border: '1px solid #445',
-    color: '#e8e8f0',
+    color: '#7ec8e3',
     borderRadius: 4,
-    padding: '4px 8px',
+    padding: '6px 8px',
     fontFamily: 'monospace',
     fontSize: 13,
     width: '100%',
@@ -222,6 +283,28 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     fontSize: 12,
     width: '100%',
+    boxSizing: 'border-box' as const,
+  },
+  timeRangeRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  timeRangeDash: {
+    color: '#667',
+    fontSize: 11,
+    width: 18,
+    textAlign: 'center' as const,
+  },
+  timeInput: {
+    background: '#1e1e38',
+    border: '1px solid #445',
+    color: '#e8e8f0',
+    borderRadius: 4,
+    padding: '4px 8px',
+    fontFamily: 'monospace',
+    fontSize: 12,
+    flex: 1,
     boxSizing: 'border-box' as const,
   },
   stationList: {
@@ -251,6 +334,23 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 2,
     maxHeight: 200,
     overflowY: 'auto' as const,
+  },
+  waypointList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    maxHeight: 140,
+    overflowY: 'auto' as const,
+    marginTop: 2,
+  },
+  waypointRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '3px 6px',
+    background: '#1a1a30',
+    borderRadius: 3,
+    fontSize: 11,
   },
   routeStep: {
     display: 'flex',
@@ -326,5 +426,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     fontSize: 12,
     flex: 1,
+  },
+  removeBtn: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    border: '1px solid #553',
+    background: '#3a1a1a',
+    color: '#e86060',
+    cursor: 'pointer',
+    fontFamily: 'monospace',
+    fontSize: 10,
+    lineHeight: 1,
+    padding: 0,
   },
 };

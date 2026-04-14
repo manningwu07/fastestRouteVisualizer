@@ -13,9 +13,11 @@ function makeLine(overrides: Partial<TransitLine> = {}): TransitLine {
     stops: ['S1', 'S2', 'S3'],
     travelTimes: [5, 10],          // S1→S2: 5 min, S2→S3: 10 min
     forwardSchedule: {
-      firstDeparture: 60,          // 01:00
-      lastDeparture: 120,          // 02:00
-      headwayMin: 20,
+      windows: [{
+        firstDeparture: 60,          // 01:00
+        lastDeparture: 120,          // 02:00
+        headwayMin: 20,
+      }],
     },
     bidirectional: true,
     ...overrides,
@@ -90,6 +92,38 @@ describe('nextDeparture', () => {
   it('returns null when arriving after last departure at offset station', () => {
     // lastAtStation for idx 1 = 120 + 5 = 125; arrive at 126
     expect(nextDeparture(line, 1, 126)).toBe(null);
+  });
+});
+
+describe('nextDeparture with multiple windows', () => {
+  const line = makeLine({
+    forwardSchedule: {
+      windows: [
+        { firstDeparture: 60, lastDeparture: 120, headwayMin: 20 },
+        { firstDeparture: 180, lastDeparture: 240, headwayMin: 15 },
+      ],
+    },
+  });
+
+  it('returns departure from the later window when arriving in a gap', () => {
+    expect(nextDeparture(line, 0, 150)).toBe(180);
+  });
+
+  it('returns null when arriving after all windows', () => {
+    expect(nextDeparture(line, 0, 241)).toBe(null);
+  });
+
+  it('selects the earliest departure across overlapping windows', () => {
+    const overlap = makeLine({
+      forwardSchedule: {
+        windows: [
+          { firstDeparture: 60, lastDeparture: 180, headwayMin: 30 },
+          { firstDeparture: 90, lastDeparture: 210, headwayMin: 20 },
+        ],
+      },
+    });
+    // At t=101 departures are 120 (window1) and 110 (window2), so earliest is 110.
+    expect(nextDeparture(overlap, 0, 101)).toBe(110);
   });
 });
 
@@ -241,9 +275,11 @@ describe('computeStepTiming', () => {
     stops: ['S1', 'S2', 'S3'],
     travelTimes: [5, 10],
     forwardSchedule: {
-      firstDeparture: 60,
-      lastDeparture: 180,
-      headwayMin: 20,
+      windows: [{
+        firstDeparture: 60,
+        lastDeparture: 180,
+        headwayMin: 20,
+      }],
     },
     bidirectional: true,
   };
@@ -255,9 +291,11 @@ describe('computeStepTiming', () => {
     stops: ['S2', 'S4'],
     travelTimes: [8],
     forwardSchedule: {
-      firstDeparture: 60,
-      lastDeparture: 180,
-      headwayMin: 20,
+      windows: [{
+        firstDeparture: 60,
+        lastDeparture: 180,
+        headwayMin: 20,
+      }],
     },
     bidirectional: true,
   };
@@ -368,9 +406,11 @@ describe('Integration: 2-line system with transfer', () => {
     stops: ['A', 'B', 'C'],
     travelTimes: [4, 6],
     forwardSchedule: {
-      firstDeparture: 480,
-      lastDeparture: 600,
-      headwayMin: 30,
+      windows: [{
+        firstDeparture: 480,
+        lastDeparture: 600,
+        headwayMin: 30,
+      }],
     },
     bidirectional: true,
   };
@@ -382,9 +422,11 @@ describe('Integration: 2-line system with transfer', () => {
     stops: ['B', 'D'],
     travelTimes: [7],
     forwardSchedule: {
-      firstDeparture: 485,
-      lastDeparture: 605,
-      headwayMin: 30,
+      windows: [{
+        firstDeparture: 485,
+        lastDeparture: 605,
+        headwayMin: 30,
+      }],
     },
     bidirectional: true,
   };
@@ -527,15 +569,36 @@ describe('nextDepartureReverse', () => {
   it('uses reverseSchedule when provided', () => {
     const lineWithReverse = makeLine({
       reverseSchedule: {
-        firstDeparture: 200,
-        lastDeparture: 300,
-        headwayMin: 30,
+        windows: [{
+          firstDeparture: 200,
+          lastDeparture: 300,
+          headwayMin: 30,
+        }],
       },
     });
     // Reverse departs last stop (idx 2, offset 0) at 200, 230, 260, 290
     expect(nextDepartureReverse(lineWithReverse, 2, 190)).toBe(200);
     expect(nextDepartureReverse(lineWithReverse, 2, 201)).toBe(230);
     expect(nextDepartureReverse(lineWithReverse, 2, 291)).toBe(null);
+  });
+});
+
+describe('nextDepartureReverse with multiple windows', () => {
+  const line = makeLine({
+    reverseSchedule: {
+      windows: [
+        { firstDeparture: 200, lastDeparture: 260, headwayMin: 20 },
+        { firstDeparture: 320, lastDeparture: 360, headwayMin: 10 },
+      ],
+    },
+  });
+
+  it('returns a departure from the later reverse window after a service gap', () => {
+    expect(nextDepartureReverse(line, 2, 280)).toBe(320);
+  });
+
+  it('returns null when no reverse windows can serve the request time', () => {
+    expect(nextDepartureReverse(line, 2, 361)).toBe(null);
   });
 });
 
@@ -612,9 +675,11 @@ describe('computeStepTiming reverse direction', () => {
     stops: ['S1', 'S2', 'S3'],
     travelTimes: [5, 10],
     forwardSchedule: {
-      firstDeparture: 60,
-      lastDeparture: 180,
-      headwayMin: 20,
+      windows: [{
+        firstDeparture: 60,
+        lastDeparture: 180,
+        headwayMin: 20,
+      }],
     },
     bidirectional: true,
   };

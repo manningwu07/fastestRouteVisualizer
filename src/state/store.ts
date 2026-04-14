@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import type { Station, TransitLine, RunEdge, Transfer, RouteStep } from '../engine/types.js';
-import { generateTransfers, getConnectionsBetween, computeStepTiming } from '../engine/graph.js';
+import type { Station, TransitLine, RunEdge, Transfer, RouteStep, LineSchedule, ScheduleWindow } from '../engine/types.js';
+import { generateTransfers, computeStepTiming } from '../engine/graph.js';
 import type { Connection } from '../engine/graph.js';
+import { solveFastestRouteForOrderedWaypoints } from '../engine/pathfinder.js';
 
 export type ToolMode = 'select' | 'addStation' | 'addLine' | 'addRunEdge';
 export type AppMode = 'builder' | 'pathfinder';
@@ -30,6 +31,7 @@ export interface SavedGraph {
 const GRAPHS_STORAGE_KEY = 'transit_saved_graphs';
 const ACTIVE_GRAPH_STORAGE_KEY = 'transit_active_graph_id';
 const MAX_BUILDER_UNDO_STEPS = 30;
+const DEFAULT_SCHEDULE_WINDOW: ScheduleWindow = { firstDeparture: 360, lastDeparture: 1380, headwayMin: 10 };
 
 export interface AppState {
   mode: AppMode;
@@ -52,6 +54,9 @@ export interface AppState {
 
   // Pathfinder state
   currentRoute: RouteStep[];
+  pathfinderWaypoints: string[];
+  pathfinderSearchStartMin: number;
+  pathfinderSearchEndMin: number;
   routeStartTime: number;
   savedRoutes: SavedRoute[];
   pathfinderSelectedStation: string | null;
@@ -69,7 +74,7 @@ export interface AppState {
   addRunEdge(edge: Omit<RunEdge, 'id'>): void;
   removeRunEdge(id: string): void;
   updateRunEdge(id: string, updates: Partial<Omit<RunEdge, 'id'>>): void;
-  updateTransfer(stationId: string, fromLineId: string, toLineId: string, transferMin: number): void;
+  updateTransfer(stationId: string, fromLineId: string, toLineId: string, transferMin: number, syncOpposite?: boolean): void;
   regenerateTransfers(): void;
   setMode(mode: AppMode): void;
   setSelectedTool(tool: ToolMode): void;
@@ -94,6 +99,11 @@ export interface AppState {
 
   // Pathfinder actions
   setRouteStartTime(time: number): void;
+  setPathfinderSearchWindow(startMin: number, endMin: number): void;
+  addPathfinderWaypoint(stationId: string): void;
+  removePathfinderWaypoint(index: number): void;
+  clearPathfinderWaypoints(): void;
+  solvePathfinderWaypoints(): void;
   setPathfinderSelectedStation(stationId: string | null): void;
   setTabFocusedStationId(stationId: string | null): void;
   pushBuilderUndoSnapshot(): void;
@@ -121,6 +131,70 @@ function persistGraphs(savedGraphs: SavedGraph[], activeGraphId: string): void {
   }
 }
 
+function normalizeSchedule(schedule: unknown): LineSchedule {
+  if (schedule && typeof schedule === 'object') {
+    const candidate = schedule as { windows?: unknown; firstDeparture?: unknown; lastDeparture?: unknown; headwayMin?: unknown };
+    if (Array.isArray(candidate.windows)) {
+      const windows = candidate.windows
+        .filter((w): w is ScheduleWindow => {
+          if (!w || typeof w !== 'object') return false;
+          const item = w as { firstDeparture?: unknown; lastDeparture?: unknown; headwayMin?: unknown };
+          return typeof item.firstDeparture === 'number'
+            && typeof item.lastDeparture === 'number'
+            && typeof item.headwayMin === 'number';
+        })
+        .map(w => ({
+          firstDeparture: w.firstDeparture,
+          lastDeparture: w.lastDeparture,
+          headwayMin: Math.max(1, w.headwayMin),
+        }));
+
+      return { windows: windows.length > 0 ? windows : [DEFAULT_SCHEDULE_WINDOW] };
+    }
+
+    if (
+      typeof candidate.firstDeparture === 'number'
+      && typeof candidate.lastDeparture === 'number'
+      && typeof candidate.headwayMin === 'number'
+    ) {
+      return {
+        windows: [{
+          firstDeparture: candidate.firstDeparture,
+          lastDeparture: candidate.lastDeparture,
+          headwayMin: Math.max(1, candidate.headwayMin),
+        }],
+      };
+    }
+  }
+
+  return { windows: [DEFAULT_SCHEDULE_WINDOW] };
+}
+
+function normalizeLine(line: TransitLine): TransitLine {
+  return {
+    ...line,
+    forwardSchedule: normalizeSchedule(line.forwardSchedule),
+    reverseSchedule: line.reverseSchedule ? normalizeSchedule(line.reverseSchedule) : undefined,
+  };
+}
+
+function normalizeLines(lines: Record<string, TransitLine>): Record<string, TransitLine> {
+  const normalized: Record<string, TransitLine> = {};
+  for (const [id, line] of Object.entries(lines)) {
+    normalized[id] = normalizeLine(line);
+  }
+  return normalized;
+}
+
+function normalizeGraphState(data: GraphState): GraphState {
+  return {
+    stations: data.stations,
+    lines: normalizeLines(data.lines),
+    runEdges: data.runEdges,
+    transfers: data.transfers,
+  };
+}
+
 export const useStore = create<AppState>((set, get) => ({
   mode: 'builder',
   stations: {},
@@ -142,6 +216,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   // Pathfinder defaults
   currentRoute: [],
+  pathfinderWaypoints: [],
+  pathfinderSearchStartMin: 0,
+  pathfinderSearchEndMin: 24 * 60 - 1,
   routeStartTime: 480,
   savedRoutes: [],
   pathfinderSelectedStation: null,
@@ -283,10 +360,18 @@ export const useStore = create<AppState>((set, get) => ({
     get().saveCurrentGraph();
   },
 
-  updateTransfer(stationId, fromLineId, toLineId, transferMin) {
+  updateTransfer(stationId, fromLineId, toLineId, transferMin, syncOpposite = true) {
     set(state => ({
       transfers: state.transfers.map(t =>
-        t.stationId === stationId && t.fromLineId === fromLineId && t.toLineId === toLineId
+        (
+          (t.stationId === stationId && t.fromLineId === fromLineId && t.toLineId === toLineId)
+          || (
+            syncOpposite
+            && t.stationId === stationId
+            && t.fromLineId === toLineId
+            && t.toLineId === fromLineId
+          )
+        )
           ? { ...t, transferMin }
           : t
       ),
@@ -335,11 +420,17 @@ export const useStore = create<AppState>((set, get) => ({
   loadFromJSON(json) {
     try {
       const data = JSON.parse(json);
-      set({
+      const normalized = normalizeGraphState({
         stations: data.stations ?? {},
         lines: data.lines ?? {},
         runEdges: data.runEdges ?? [],
         transfers: data.transfers ?? [],
+      });
+      set({
+        stations: normalized.stations,
+        lines: normalized.lines,
+        runEdges: normalized.runEdges,
+        transfers: normalized.transfers,
         builderUndoStack: [],
         selectedStationIds: [],
       });
@@ -407,20 +498,24 @@ export const useStore = create<AppState>((set, get) => ({
 
     const target = updatedGraphs.find(g => g.id === id);
     if (!target) return;
+    const normalizedTargetData = normalizeGraphState(target.data);
+    const normalizedGraphs = updatedGraphs.map(g =>
+      g.id === id ? { ...g, data: normalizedTargetData } : g
+    );
 
     set({
-      savedGraphs: updatedGraphs,
+      savedGraphs: normalizedGraphs,
       activeGraphId: id,
-      stations: target.data.stations,
-      lines: target.data.lines,
-      runEdges: target.data.runEdges,
-      transfers: target.data.transfers,
+      stations: normalizedTargetData.stations,
+      lines: normalizedTargetData.lines,
+      runEdges: normalizedTargetData.runEdges,
+      transfers: normalizedTargetData.transfers,
       builderUndoStack: [],
       selectedStationIds: [],
       selectedLineId: null,
       selectedRunEdgeId: null,
     });
-    persistGraphs(updatedGraphs, id);
+    persistGraphs(normalizedGraphs, id);
   },
 
   renameGraph(id, name) {
@@ -484,7 +579,12 @@ export const useStore = create<AppState>((set, get) => ({
       const savedActiveId = localStorage.getItem(ACTIVE_GRAPH_STORAGE_KEY);
 
       if (raw) {
-        const graphs: SavedGraph[] = JSON.parse(raw);
+        const parsedGraphs: SavedGraph[] = JSON.parse(raw);
+        const graphs = parsedGraphs.map(g => ({
+          ...g,
+          data: normalizeGraphState(g.data),
+        }));
+
         if (graphs.length > 0) {
           const activeId = (savedActiveId && graphs.find(g => g.id === savedActiveId))
             ? savedActiveId
@@ -499,6 +599,7 @@ export const useStore = create<AppState>((set, get) => ({
             transfers: active.data.transfers,
             builderUndoStack: [],
           });
+          persistGraphs(graphs, activeId);
           return;
         }
       }
@@ -550,12 +651,12 @@ export const useStore = create<AppState>((set, get) => ({
   importGraph(json) {
     try {
       const data = JSON.parse(json);
-      const graphData: GraphState = {
+      const graphData = normalizeGraphState({
         stations: data.stations ?? {},
         lines: data.lines ?? {},
         runEdges: data.runEdges ?? [],
         transfers: data.transfers ?? [],
-      };
+      });
 
       const { savedGraphs } = get();
       let n = savedGraphs.length + 1;
@@ -613,6 +714,79 @@ export const useStore = create<AppState>((set, get) => ({
     set({ routeStartTime: time });
   },
 
+  setPathfinderSearchWindow(startMin, endMin) {
+    const normalizedStart = Math.max(0, Math.min(24 * 60 - 1, Math.floor(startMin)));
+    const normalizedEnd = Math.max(0, Math.min(24 * 60 - 1, Math.floor(endMin)));
+    if (normalizedStart > normalizedEnd) {
+      get().showToast('Search start time must be before end time');
+      return;
+    }
+    set({
+      pathfinderSearchStartMin: normalizedStart,
+      pathfinderSearchEndMin: normalizedEnd,
+    });
+  },
+
+  addPathfinderWaypoint(stationId) {
+    set(state => {
+      if (state.pathfinderWaypoints[state.pathfinderWaypoints.length - 1] === stationId) {
+        return state;
+      }
+      return {
+        pathfinderWaypoints: [...state.pathfinderWaypoints, stationId],
+        pathfinderSelectedStation: stationId,
+      };
+    });
+  },
+
+  removePathfinderWaypoint(index) {
+    set(state => {
+      const nextWaypoints = state.pathfinderWaypoints.filter((_, i) => i !== index);
+      return {
+        pathfinderWaypoints: nextWaypoints,
+        pathfinderSelectedStation: nextWaypoints.length > 0 ? nextWaypoints[nextWaypoints.length - 1] : null,
+      };
+    });
+  },
+
+  clearPathfinderWaypoints() {
+    set({ pathfinderWaypoints: [], pathfinderSelectedStation: null });
+  },
+
+  solvePathfinderWaypoints() {
+    const {
+      stations,
+      lines,
+      runEdges,
+      transfers,
+      pathfinderWaypoints,
+      pathfinderSearchStartMin,
+      pathfinderSearchEndMin,
+    } = get();
+    if (pathfinderWaypoints.length < 2) {
+      get().showToast('Pick at least two stations in order');
+      return;
+    }
+
+    const graphState = { stations, lines, runEdges, transfers };
+    const solved = solveFastestRouteForOrderedWaypoints(graphState, pathfinderWaypoints, {
+      startMin: pathfinderSearchStartMin,
+      endMin: pathfinderSearchEndMin,
+    });
+    if (!solved) {
+      get().showToast('No valid timed route in selected search window');
+      return;
+    }
+
+    const destination = pathfinderWaypoints[pathfinderWaypoints.length - 1] ?? null;
+    set({
+      currentRoute: solved.steps,
+      routeStartTime: solved.startTime,
+      pathfinderSelectedStation: destination,
+    });
+    get().showToast(`Solved: ${solved.totalMin}m total travel time`);
+  },
+
   setPathfinderSelectedStation(stationId) {
     set({ pathfinderSelectedStation: stationId });
   },
@@ -641,7 +815,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   addRouteStep(stationId, connectionChoice) {
-    const { currentRoute, routeStartTime, stations, lines, runEdges, transfers } = get();
+    const { currentRoute, stations, lines, runEdges, transfers, pathfinderSelectedStation } = get();
     const graphState = { stations, lines, runEdges, transfers };
 
     let currentTime: number;
@@ -649,21 +823,23 @@ export const useStore = create<AppState>((set, get) => ({
     let previousLineId: string | null;
 
     if (currentRoute.length === 0) {
+      const now = new Date();
+      const calculatedStartTime = now.getHours() * 60 + now.getMinutes();
       const startStep: RouteStep = {
         stationId,
         lineId: null,
-        arriveAt: routeStartTime,
+        arriveAt: calculatedStartTime,
         waitTime: 0,
-        departAt: routeStartTime,
+        departAt: calculatedStartTime,
         travelTime: 0,
-        cumulativeMin: routeStartTime,
+        cumulativeMin: calculatedStartTime,
       };
-      set({ currentRoute: [startStep], pathfinderSelectedStation: stationId });
+      set({ currentRoute: [startStep], pathfinderSelectedStation: stationId, routeStartTime: calculatedStartTime });
       return;
     }
 
     const lastStep = currentRoute[currentRoute.length - 1];
-    fromStationId = lastStep.stationId;
+    fromStationId = pathfinderSelectedStation ?? lastStep.stationId;
     currentTime = lastStep.cumulativeMin;
     previousLineId = lastStep.lineId;
 
@@ -704,7 +880,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   clearRoute() {
-    set({ currentRoute: [], pathfinderSelectedStation: null });
+    const { pathfinderWaypoints } = get();
+    const tail = pathfinderWaypoints.length > 0 ? pathfinderWaypoints[pathfinderWaypoints.length - 1] : null;
+    set({ currentRoute: [], pathfinderSelectedStation: tail });
   },
 
   saveCurrentRoute(name) {
