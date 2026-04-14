@@ -30,23 +30,26 @@ export function ConnectionPicker({ toStationId, connections, onPick, onCancel }:
     if (!line) return null;
 
     let offset: number;
+    let schedule;
     if (conn.direction === 'reverse') {
       offset = getStationOffsetReverse(line, conn.fromIdx);
+      schedule = line.reverseSchedule ?? line.forwardSchedule;
     } else {
       offset = (() => {
         let o = 0;
         for (let i = 0; i < conn.fromIdx; i++) o += line.travelTimes[i];
         return o;
       })();
+      schedule = line.forwardSchedule;
     }
 
-    const firstAtStation = line.firstDeparture + offset;
-    const lastAtStation = line.lastDeparture + offset;
+    const firstAtStation = schedule.firstDeparture + offset;
+    const lastAtStation = schedule.lastDeparture + offset;
     if (currentTime > lastAtStation) return null;
     if (currentTime <= firstAtStation) return firstAtStation;
     const elapsed = currentTime - firstAtStation;
-    const cycles = Math.ceil(elapsed / line.headwayMin);
-    const dep = firstAtStation + cycles * line.headwayMin;
+    const cycles = Math.ceil(elapsed / schedule.headwayMin);
+    const dep = firstAtStation + cycles * schedule.headwayMin;
     return dep > lastAtStation ? null : dep;
   }
 

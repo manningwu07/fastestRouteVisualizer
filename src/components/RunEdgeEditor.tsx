@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../state/store.js';
+import { NumericInput } from './NumericInput.js';
 
 export function RunEdgeEditor() {
   const {
@@ -69,17 +70,13 @@ export function RunEdgeEditor() {
       </div>
 
       <label style={styles.label}>Travel Time</label>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <input
-          type="number"
-          min={1}
-          style={styles.input}
-          value={timeMin}
-          onChange={e => setTimeMin(parseInt(e.target.value) || 1)}
-          onBlur={() => save()}
-        />
-        <span style={styles.unit}>min</span>
-      </div>
+      <NumericInput
+        value={timeMin}
+        onChange={v => { setTimeMin(Math.max(1, v)); save({ timeMin: Math.max(1, v) }); }}
+        min={1}
+        suffix="min"
+        style={styles.input}
+      />
 
       <label style={styles.checkRow}>
         <input

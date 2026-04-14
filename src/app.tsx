@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useStore } from './state/store.js';
 import { Toolbar } from './components/Toolbar.js';
@@ -12,12 +12,58 @@ import { RunEdgeEditor } from './components/RunEdgeEditor.js';
 import { PathfinderPanel } from './components/PathfinderPanel.js';
 import { Timetable } from './components/Timetable.js';
 import { RouteComparison } from './components/RouteComparison.js';
-import { StationList } from './components/StationList.js';
+import { GraphSidebar } from './components/GraphSidebar.js';
 import { KeyboardShortcutsPanel } from './components/KeyboardShortcutsPanel.js';
+import { Toast } from './components/Toast.js';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
 import './styles.css';
 
-function BuilderSidePanel() {
+// Resizable right sidebar hook
+function useResizableSidebar(
+  defaultWidth: number,
+  minWidth: number,
+  maxWidth: number,
+  side: 'left' | 'right'
+) {
+  const [width, setWidth] = useState(defaultWidth);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartX = useRef<number>(0);
+  const dragStartWidth = useRef<number>(defaultWidth);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragStartX.current = e.clientX;
+    dragStartWidth.current = width;
+    setIsDragging(true);
+  }, [width]);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const onMouseMove = (e: MouseEvent) => {
+      const delta = e.clientX - dragStartX.current;
+      const newWidth = side === 'right'
+        ? dragStartWidth.current - delta
+        : dragStartWidth.current + delta;
+      setWidth(Math.max(minWidth, Math.min(maxWidth, newWidth)));
+    };
+
+    const onMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [isDragging, minWidth, maxWidth, side]);
+
+  return { width, isDragging, handleMouseDown };
+}
+
+function BuilderSidePanel({ width }: { width: number }) {
   const { selectedTool, transfers, selectedLineId, selectedRunEdgeId } = useStore();
 
   // Priority: LineEditor / RunEdgeEditor > tool-specific panel > StationPanel
@@ -25,7 +71,7 @@ function BuilderSidePanel() {
   const showRunEdgeEditor = selectedRunEdgeId !== null && !showLineEditor;
 
   return (
-    <div style={sidePanelStyle}>
+    <div style={{ ...sidePanelStyle, width }}>
       {showLineEditor ? (
         <LineEditor />
       ) : showRunEdgeEditor ? (
@@ -52,9 +98,9 @@ function BuilderSidePanel() {
   );
 }
 
-function PathfinderSidePanel() {
+function PathfinderSidePanel({ width }: { width: number }) {
   return (
-    <div style={pathfinderPanelStyle}>
+    <div style={{ ...pathfinderPanelStyle, width }}>
       <PathfinderPanel />
       <div style={{ borderTop: '1px solid #222', marginTop: 4, paddingTop: 8 }}>
         <Timetable />
@@ -67,20 +113,21 @@ function PathfinderSidePanel() {
 }
 
 function App() {
-  const { mode, saveToJSON, loadFromJSON } = useStore();
+  const { mode, loadGraphsFromStorage } = useStore();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleSaveGraph = useCallback(() => {
-    const json = saveToJSON();
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'transit-graph.json';
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [saveToJSON]);
+  // Load graphs from localStorage on mount
+  useEffect(() => {
+    loadGraphsFromStorage();
+  }, []);
+
+  const rightSidebar = useResizableSidebar(
+    mode === 'pathfinder' ? 340 : 260,
+    150,
+    500,
+    'right'
+  );
 
   const handleLoadGraph = useCallback(() => {
     fileInputRef.current?.click();
@@ -92,15 +139,17 @@ function App() {
     const reader = new FileReader();
     reader.onload = ev => {
       const text = ev.target?.result;
-      if (typeof text === 'string') loadFromJSON(text);
+      if (typeof text === 'string') {
+        const { importGraph } = useStore.getState();
+        importGraph(text);
+      }
     };
     reader.readAsText(file);
     e.target.value = '';
-  }, [loadFromJSON]);
+  }, []);
 
   useKeyboardShortcuts({
     onToggleShortcuts: () => setShortcutsOpen(v => !v),
-    onSaveGraph: handleSaveGraph,
     onLoadGraph: handleLoadGraph,
   });
 
@@ -108,11 +157,20 @@ function App() {
     <div style={appStyle}>
       <Toolbar onOpenShortcuts={() => setShortcutsOpen(v => !v)} />
       <div style={mainStyle}>
-        <StationList />
+        <GraphSidebar />
         <GraphCanvas />
-        {mode === 'builder' ? <BuilderSidePanel /> : <PathfinderSidePanel />}
+        {/* Drag handle on the left edge of right sidebar */}
+        <div
+          className={`resize-handle${rightSidebar.isDragging ? ' dragging' : ''}`}
+          onMouseDown={rightSidebar.handleMouseDown}
+          style={{ borderLeft: '1px solid #1a1a35' }}
+        />
+        {mode === 'builder'
+          ? <BuilderSidePanel width={rightSidebar.width} />
+          : <PathfinderSidePanel width={rightSidebar.width} />
+        }
       </div>
-      {/* Hidden file input for keyboard-triggered load */}
+      {/* Hidden file input for keyboard-triggered import */}
       <input
         ref={fileInputRef}
         type="file"
@@ -123,6 +181,7 @@ function App() {
       {shortcutsOpen && (
         <KeyboardShortcutsPanel onClose={() => setShortcutsOpen(false)} />
       )}
+      <Toast />
     </div>
   );
 }
@@ -144,20 +203,16 @@ const mainStyle: React.CSSProperties = {
 };
 
 const sidePanelStyle: React.CSSProperties = {
-  width: 260,
   flexShrink: 0,
   background: '#12122a',
-  borderLeft: '1px solid #222',
   display: 'flex',
   flexDirection: 'column',
   overflowY: 'auto',
 };
 
 const pathfinderPanelStyle: React.CSSProperties = {
-  width: 340,
   flexShrink: 0,
   background: '#12122a',
-  borderLeft: '1px solid #222',
   display: 'flex',
   flexDirection: 'column',
   overflowY: 'auto',
@@ -167,7 +222,7 @@ const sectionHeader: React.CSSProperties = {
   fontFamily: 'monospace',
   fontWeight: 700,
   color: '#7ec8e3',
-  fontSize: 14,
+  fontSize: 15,
   borderBottom: '1px solid #333',
   paddingBottom: 6,
   marginBottom: 4,
@@ -176,7 +231,7 @@ const sectionHeader: React.CSSProperties = {
 const hintStyle: React.CSSProperties = {
   color: '#555',
   fontFamily: 'monospace',
-  fontSize: 11,
+  fontSize: 13,
   lineHeight: 1.6,
 };
 

@@ -14,6 +14,7 @@ body,
   background: #0d0d1a;
   color: #e8e8f0;
   font-family: monospace, 'Courier New', Courier;
+  font-size: 15px;
 }
 
 /* Scrollbar styling */
@@ -41,8 +42,8 @@ input[type='time'] {
   border-radius: 3px;
   color: #e8e8f0;
   font-family: monospace;
-  font-size: 12px;
-  padding: 4px 8px;
+  font-size: 14px;
+  padding: 5px 9px;
   outline: none;
   transition: border-color 0.15s;
 }
@@ -56,6 +57,7 @@ input[type='time']:focus {
 button {
   cursor: pointer;
   transition: opacity 0.15s, filter 0.15s;
+  font-size: 14px;
 }
 
 button:hover:not(:disabled) {
@@ -65,4 +67,51 @@ button:hover:not(:disabled) {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+/* Resize handle */
+.resize-handle {
+  flex-shrink: 0;
+  width: 6px;
+  background: #12122a;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 10;
+  transition: background 0.15s;
+}
+
+.resize-handle:hover,
+.resize-handle.dragging {
+  background: #1e1e40;
+}
+
+.resize-handle::after {
+  content: '';
+  display: block;
+  width: 2px;
+  height: 40px;
+  background: repeating-linear-gradient(
+    to bottom,
+    #3a3a60 0px,
+    #3a3a60 3px,
+    transparent 3px,
+    transparent 6px
+  );
+  border-radius: 1px;
+  opacity: 0.7;
+}
+
+.resize-handle:hover::after,
+.resize-handle.dragging::after {
+  opacity: 1;
+  background: repeating-linear-gradient(
+    to bottom,
+    #7ec8e3 0px,
+    #7ec8e3 3px,
+    transparent 3px,
+    transparent 6px
+  );
 }

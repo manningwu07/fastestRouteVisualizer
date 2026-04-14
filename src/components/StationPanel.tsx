@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../state/store.js';
 
 export function StationPanel() {
@@ -9,14 +9,64 @@ export function StationPanel() {
   const station = stationId ? stations[stationId] : null;
 
   const [name, setName] = useState('');
-  const [agency, setAgency] = useState('');
+  const [agencies, setAgencies] = useState<string[]>([]);
+  const [agencyInput, setAgencyInput] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Collect all agency names used across all stations for autocomplete
+  const allAgencies = Array.from(
+    new Set(
+      Object.values(stations).flatMap(s => s.agencies ?? [])
+    )
+  ).filter(Boolean);
+
+  const filteredSuggestions = agencyInput.trim()
+    ? allAgencies.filter(
+        a =>
+          a.toLowerCase().includes(agencyInput.toLowerCase()) &&
+          !agencies.includes(a)
+      )
+    : allAgencies.filter(a => !agencies.includes(a));
 
   useEffect(() => {
     if (station) {
       setName(station.name);
-      setAgency(station.agency ?? '');
+      setAgencies(station.agencies ?? []);
+      setAgencyInput('');
     }
   }, [stationId]);
+
+  function addAgency(value: string) {
+    const trimmed = value.trim();
+    if (!trimmed || agencies.includes(trimmed)) {
+      setAgencyInput('');
+      setShowSuggestions(false);
+      return;
+    }
+    const next = [...agencies, trimmed];
+    setAgencies(next);
+    setAgencyInput('');
+    setShowSuggestions(false);
+    if (station) updateStation(station.id, { agencies: next });
+  }
+
+  function removeAgency(a: string) {
+    const next = agencies.filter(x => x !== a);
+    setAgencies(next);
+    if (station) updateStation(station.id, { agencies: next });
+  }
+
+  function handleAgencyKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      addAgency(agencyInput);
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
+    } else if (e.key === 'Backspace' && agencyInput === '' && agencies.length > 0) {
+      removeAgency(agencies[agencies.length - 1]);
+    }
+  }
 
   if (!station) {
     return (
@@ -37,16 +87,61 @@ export function StationPanel() {
         value={name}
         onChange={e => setName(e.target.value)}
         onBlur={() => updateStation(station.id, { name })}
+        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
       />
 
-      <label style={styles.label}>Agency</label>
-      <input
-        style={styles.input}
-        value={agency}
-        onChange={e => setAgency(e.target.value)}
-        onBlur={() => updateStation(station.id, { agency })}
-        placeholder="optional"
-      />
+      <label style={styles.label}>Agencies</label>
+      <div style={styles.tagBox}>
+        {agencies.map(a => (
+          <span key={a} style={styles.tag}>
+            {a}
+            <button
+              style={styles.tagRemove}
+              onClick={() => removeAgency(a)}
+              title={`Remove ${a}`}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <div style={{ position: 'relative', flex: 1, minWidth: 80 }}>
+          <input
+            ref={inputRef}
+            style={styles.tagInput}
+            value={agencyInput}
+            onChange={e => {
+              setAgencyInput(e.target.value);
+              setShowSuggestions(true);
+            }}
+            onFocus={() => setShowSuggestions(true)}
+            onBlur={() => {
+              setTimeout(() => {
+                setShowSuggestions(false);
+                if (agencyInput.trim()) addAgency(agencyInput);
+              }, 120);
+            }}
+            onKeyDown={handleAgencyKeyDown}
+            placeholder={agencies.length === 0 ? 'Type agency, press Enter…' : '+ add'}
+          />
+          {showSuggestions && filteredSuggestions.length > 0 && (
+            <div style={styles.suggestions}>
+              {filteredSuggestions.map(s => (
+                <div
+                  key={s}
+                  style={styles.suggestion}
+                  onMouseDown={e => {
+                    e.preventDefault();
+                    addAgency(s);
+                  }}
+                >
+                  {s}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      <div style={styles.tagHint}>Press Enter or comma to add. Backspace to remove last.</div>
 
       <div style={styles.coords}>
         <span style={styles.coordLabel}>x: {Math.round(station.x)}</span>
@@ -55,6 +150,7 @@ export function StationPanel() {
 
       <button
         style={styles.deleteBtn}
+        tabIndex={-1}
         onClick={() => {
           removeStation(station.id);
           setSelectedStationIds([]);
@@ -101,6 +197,75 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     padding: '4px 8px',
     outline: 'none',
+  },
+  tagBox: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 4,
+    background: '#1a1a2e',
+    border: '1px solid #333',
+    borderRadius: 3,
+    padding: '4px 6px',
+    minHeight: 32,
+    alignItems: 'center',
+    cursor: 'text',
+  },
+  tag: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    background: '#2a3a5a',
+    color: '#7ec8e3',
+    borderRadius: 3,
+    padding: '1px 6px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    whiteSpace: 'nowrap' as const,
+  },
+  tagRemove: {
+    background: 'none',
+    border: 'none',
+    color: '#7ec8e3',
+    cursor: 'pointer',
+    padding: 0,
+    fontSize: 13,
+    lineHeight: 1,
+    opacity: 0.7,
+  },
+  tagInput: {
+    background: 'transparent',
+    border: 'none',
+    color: '#e8e8f0',
+    fontFamily: 'monospace',
+    fontSize: 12,
+    outline: 'none',
+    width: '100%',
+    padding: '2px 0',
+  },
+  tagHint: {
+    fontFamily: 'monospace',
+    fontSize: 10,
+    color: '#555',
+    marginTop: -2,
+  },
+  suggestions: {
+    position: 'absolute' as const,
+    top: '100%',
+    left: 0,
+    right: 0,
+    background: '#1a1a2e',
+    border: '1px solid #444',
+    borderRadius: 3,
+    zIndex: 100,
+    maxHeight: 120,
+    overflowY: 'auto' as const,
+  },
+  suggestion: {
+    padding: '4px 8px',
+    fontFamily: 'monospace',
+    fontSize: 12,
+    color: '#c8c8e0',
+    cursor: 'pointer',
   },
   coords: {
     display: 'flex',

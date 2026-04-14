@@ -12,9 +12,11 @@ function makeLine(overrides: Partial<TransitLine> = {}): TransitLine {
     agency: 'AgencyA',
     stops: ['S1', 'S2', 'S3'],
     travelTimes: [5, 10],          // S1→S2: 5 min, S2→S3: 10 min
-    firstDeparture: 60,            // 01:00
-    lastDeparture: 120,            // 02:00
-    headwayMin: 20,
+    forwardSchedule: {
+      firstDeparture: 60,          // 01:00
+      lastDeparture: 120,          // 02:00
+      headwayMin: 20,
+    },
     bidirectional: true,
     ...overrides,
   };
@@ -54,7 +56,7 @@ describe('runArrival', () => {
 
 describe('nextDeparture', () => {
   const line = makeLine();
-  // firstDeparture=60, headway=20, lastDeparture=120
+  // forwardSchedule firstDeparture=60, headway=20, lastDeparture=120
   // Departures from first stop: 60, 80, 100, 120
   // At station index 1 (offset 5): 65, 85, 105, 125 → but lastDeparture+offset=125
   //   wait — lastAtStation for idx 1 = 120 + 5 = 125
@@ -137,6 +139,40 @@ describe('generateTransfers', () => {
     };
     expect(generateTransfers(state)).toEqual([]);
   });
+
+  it('station agencies override: both lines in station agencies → 0 min', () => {
+    const state: GraphState = {
+      stations: {
+        S2: { id: 'S2', name: 'S2', x: 0, y: 0, agencies: ['AgencyA', 'AgencyB'] },
+      },
+      lines: {
+        L1: makeLine({ id: 'L1', agency: 'AgencyA', stops: ['S1', 'S2'] }),
+        L2: makeLine({ id: 'L2', agency: 'AgencyB', stops: ['S2', 'S3'] }),
+      },
+      runEdges: [],
+      transfers: [],
+    };
+    const transfers = generateTransfers(state);
+    expect(transfers.length).toBe(2);
+    expect(transfers.every((t) => t.transferMin === 0)).toBe(true);
+  });
+
+  it('station agencies override: only one line in station agencies → 1 min', () => {
+    const state: GraphState = {
+      stations: {
+        S2: { id: 'S2', name: 'S2', x: 0, y: 0, agencies: ['AgencyA'] },
+      },
+      lines: {
+        L1: makeLine({ id: 'L1', agency: 'AgencyA', stops: ['S1', 'S2'] }),
+        L2: makeLine({ id: 'L2', agency: 'AgencyB', stops: ['S2', 'S3'] }),
+      },
+      runEdges: [],
+      transfers: [],
+    };
+    const transfers = generateTransfers(state);
+    expect(transfers.length).toBe(2);
+    expect(transfers.every((t) => t.transferMin === 1)).toBe(true);
+  });
 });
 
 // ─── getConnectionsBetween ───────────────────────────────────────────────────
@@ -204,9 +240,11 @@ describe('computeStepTiming', () => {
     agency: 'AgencyA',
     stops: ['S1', 'S2', 'S3'],
     travelTimes: [5, 10],
-    firstDeparture: 60,
-    lastDeparture: 180,
-    headwayMin: 20,
+    forwardSchedule: {
+      firstDeparture: 60,
+      lastDeparture: 180,
+      headwayMin: 20,
+    },
     bidirectional: true,
   };
 
@@ -216,9 +254,11 @@ describe('computeStepTiming', () => {
     agency: 'AgencyB',
     stops: ['S2', 'S4'],
     travelTimes: [8],
-    firstDeparture: 60,
-    lastDeparture: 180,
-    headwayMin: 20,
+    forwardSchedule: {
+      firstDeparture: 60,
+      lastDeparture: 180,
+      headwayMin: 20,
+    },
     bidirectional: true,
   };
 
@@ -327,9 +367,11 @@ describe('Integration: 2-line system with transfer', () => {
     agency: 'AgencyA',
     stops: ['A', 'B', 'C'],
     travelTimes: [4, 6],
-    firstDeparture: 480,
-    lastDeparture: 600,
-    headwayMin: 30,
+    forwardSchedule: {
+      firstDeparture: 480,
+      lastDeparture: 600,
+      headwayMin: 30,
+    },
     bidirectional: true,
   };
 
@@ -339,18 +381,20 @@ describe('Integration: 2-line system with transfer', () => {
     agency: 'AgencyB',
     stops: ['B', 'D'],
     travelTimes: [7],
-    firstDeparture: 485,
-    lastDeparture: 605,
-    headwayMin: 30,
+    forwardSchedule: {
+      firstDeparture: 485,
+      lastDeparture: 605,
+      headwayMin: 30,
+    },
     bidirectional: true,
   };
 
   const state: GraphState = {
     stations: {
-      A: { id: 'A', name: 'Station A', x: 0, y: 0 },
-      B: { id: 'B', name: 'Station B', x: 1, y: 0 },
-      C: { id: 'C', name: 'Station C', x: 2, y: 0 },
-      D: { id: 'D', name: 'Station D', x: 1, y: 1 },
+      A: { id: 'A', name: 'Station A', x: 0, y: 0, agencies: [] },
+      B: { id: 'B', name: 'Station B', x: 1, y: 0, agencies: [] },
+      C: { id: 'C', name: 'Station C', x: 2, y: 0, agencies: [] },
+      D: { id: 'D', name: 'Station D', x: 1, y: 1, agencies: [] },
     },
     lines: { RED: lineRed, BLUE: lineBlue },
     runEdges: [],
@@ -451,7 +495,8 @@ describe('getStationOffsetReverse', () => {
 // ─── nextDepartureReverse ─────────────────────────────────────────────────────
 
 describe('nextDepartureReverse', () => {
-  // Line: firstDeparture=60, headway=20, lastDeparture=120
+  // Line: forwardSchedule firstDeparture=60, headway=20, lastDeparture=120
+  // (no reverseSchedule, so falls back to forwardSchedule)
   // Reverse train departs from LAST stop (idx 2, offset 0) at 60, 80, 100, 120.
   // At idx 1 (offset 10): departs at 70, 90, 110, 130
   // At idx 0 (offset 15): departs at 75, 95, 115, 135
@@ -477,6 +522,20 @@ describe('nextDepartureReverse', () => {
   it('returns null when arriving after last reverse departure at an intermediate stop', () => {
     // At idx 1 last departure = 120 + 10 = 130; arrive at 131
     expect(nextDepartureReverse(makeLine(), 1, 131)).toBe(null);
+  });
+
+  it('uses reverseSchedule when provided', () => {
+    const lineWithReverse = makeLine({
+      reverseSchedule: {
+        firstDeparture: 200,
+        lastDeparture: 300,
+        headwayMin: 30,
+      },
+    });
+    // Reverse departs last stop (idx 2, offset 0) at 200, 230, 260, 290
+    expect(nextDepartureReverse(lineWithReverse, 2, 190)).toBe(200);
+    expect(nextDepartureReverse(lineWithReverse, 2, 201)).toBe(230);
+    expect(nextDepartureReverse(lineWithReverse, 2, 291)).toBe(null);
   });
 });
 
@@ -540,7 +599,8 @@ describe('getConnectionsBetween bidirectionality', () => {
 
 describe('computeStepTiming reverse direction', () => {
   // Line L1: S1 → S2 → S3, travelTimes: [5, 10]
-  // firstDeparture: 60, lastDeparture: 180, headway: 20, bidirectional: true
+  // forwardSchedule: firstDeparture: 60, lastDeparture: 180, headway: 20, bidirectional: true
+  // No reverseSchedule → falls back to forwardSchedule
   // Reverse train departs S3 at 60, 80, 100, ..., 180.
   // At S2 (idx 1, reverseOffset=10): departs at 70, 90, 110, ..., 190.
   // At S1 (idx 0, reverseOffset=15): departs at 75, 95, 115, ..., 195.
@@ -551,9 +611,11 @@ describe('computeStepTiming reverse direction', () => {
     agency: 'AgencyA',
     stops: ['S1', 'S2', 'S3'],
     travelTimes: [5, 10],
-    firstDeparture: 60,
-    lastDeparture: 180,
-    headwayMin: 20,
+    forwardSchedule: {
+      firstDeparture: 60,
+      lastDeparture: 180,
+      headwayMin: 20,
+    },
     bidirectional: true,
   };
 

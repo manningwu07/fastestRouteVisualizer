@@ -19,8 +19,6 @@ export function Toolbar({ onOpenShortcuts }: Props) {
     selectedTool,
     setMode,
     setSelectedTool,
-    saveToJSON,
-    loadFromJSON,
     undoLastStep,
     clearRoute,
     saveCurrentRoute,
@@ -28,18 +26,12 @@ export function Toolbar({ onOpenShortcuts }: Props) {
   } = useStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  function handleSave() {
-    const json = saveToJSON();
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'transit-graph.json';
-    a.click();
-    URL.revokeObjectURL(url);
+  function handleExport() {
+    const { activeGraphId, exportGraph } = useStore.getState();
+    exportGraph(activeGraphId);
   }
 
-  function handleLoadClick() {
+  function handleImportClick() {
     fileInputRef.current?.click();
   }
 
@@ -49,7 +41,10 @@ export function Toolbar({ onOpenShortcuts }: Props) {
     const reader = new FileReader();
     reader.onload = ev => {
       const text = ev.target?.result;
-      if (typeof text === 'string') loadFromJSON(text);
+      if (typeof text === 'string') {
+        const { importGraph } = useStore.getState();
+        importGraph(text);
+      }
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -140,20 +135,19 @@ export function Toolbar({ onOpenShortcuts }: Props) {
       {mode === 'builder' && (
         <div style={styles.group}>
           <button
-            title={`Save graph [${getShortcut('save_graph')}]`}
+            title={`Export graph as JSON file [${getShortcut('export_graph')}]`}
             style={styles.actionBtn}
-            onClick={handleSave}
+            onClick={handleExport}
           >
-            Save Graph
-            <span style={styles.hint}>{getShortcut('save_graph')}</span>
+            Export
+            <span style={styles.hint}>{getShortcut('export_graph')}</span>
           </button>
           <button
-            title={`Load graph [${getShortcut('load_graph')}]`}
+            title="Import graph from JSON file"
             style={styles.actionBtn}
-            onClick={handleLoadClick}
+            onClick={handleImportClick}
           >
-            Load Graph
-            <span style={styles.hint}>{getShortcut('load_graph')}</span>
+            Import
           </button>
           <input
             ref={fileInputRef}

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { useStore } from '../state/store.js';
 
 
@@ -19,6 +19,38 @@ export function StationList() {
 
   const [collapsed, setCollapsed] = useState(false);
   const [search, setSearch] = useState('');
+
+  // Resizable width
+  const [sidebarWidth, setSidebarWidth] = useState(200);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartX = useRef<number>(0);
+  const dragStartWidth = useRef<number>(200);
+
+  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragStartX.current = e.clientX;
+    dragStartWidth.current = sidebarWidth;
+    setIsDragging(true);
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const onMouseMove = (e: MouseEvent) => {
+      const delta = e.clientX - dragStartX.current;
+      const newWidth = dragStartWidth.current + delta;
+      setSidebarWidth(Math.max(150, Math.min(500, newWidth)));
+    };
+
+    const onMouseUp = () => setIsDragging(false);
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [isDragging]);
 
   // Build visited set for pathfinder mode
   const visitedIds = useMemo(() => {
@@ -90,21 +122,9 @@ export function StationList() {
     }
   }
 
-  const containerStyle: React.CSSProperties = {
-    width: collapsed ? 28 : 200,
-    flexShrink: 0,
-    background: '#0f0f20',
-    borderRight: '1px solid #222',
-    display: 'flex',
-    flexDirection: 'column',
-    transition: 'width 0.15s ease',
-    overflow: 'hidden',
-    position: 'relative',
-  };
-
   if (collapsed) {
     return (
-      <div style={containerStyle}>
+      <div style={{ ...containerStyle, width: 28 }}>
         <button
           title="Expand station list"
           style={collapseBtn}
@@ -117,98 +137,115 @@ export function StationList() {
   }
 
   return (
-    <div style={containerStyle}>
-      {/* Header */}
-      <div style={headerStyle}>
-        <span style={headerTitle}>Stations</span>
-        <button
-          title="Collapse"
-          style={collapseBtn}
-          onClick={() => setCollapsed(true)}
-        >
-          ◀
-        </button>
-      </div>
+    <>
+      <div style={{ ...containerStyle, width: sidebarWidth }}>
+        {/* Header */}
+        <div style={headerStyle}>
+          <span style={headerTitle}>Stations</span>
+          <button
+            title="Collapse"
+            style={collapseBtn}
+            onClick={() => setCollapsed(true)}
+          >
+            ◀
+          </button>
+        </div>
 
-      {/* Search */}
-      <div style={searchContainer}>
-        <input
-          type="text"
-          placeholder="Search..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          style={searchInput}
-        />
-      </div>
+        {/* Search */}
+        <div style={searchContainer}>
+          <input
+            type="text"
+            placeholder="Search..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={searchInput}
+          />
+        </div>
 
-      {/* List */}
-      <div style={listContainer}>
-        {stationList.length === 0 && (
-          <div style={emptyHint}>
-            {Object.keys(stations).length === 0
-              ? 'No stations yet'
-              : 'No matches'}
-          </div>
-        )}
+        {/* List */}
+        <div style={listContainer}>
+          {stationList.length === 0 && (
+            <div style={emptyHint}>
+              {Object.keys(stations).length === 0
+                ? 'No stations yet'
+                : 'No matches'}
+            </div>
+          )}
 
-        {sortedGroups.map(agency => (
-          <div key={agency}>
-            <div style={agencyHeader}>{agency}</div>
-            {grouped[agency].map(st => {
-              const isSelected = selectedStationIds.includes(st.id);
-              const isTabFocused = tabFocusedStationId === st.id;
-              const isVisited = mode === 'pathfinder' && visitedIds.has(st.id);
-              const lc = lineCount[st.id] ?? 0;
+          {sortedGroups.map(agency => (
+            <div key={agency}>
+              <div style={agencyHeader}>{agency}</div>
+              {grouped[agency].map(st => {
+                const isSelected = selectedStationIds.includes(st.id);
+                const isTabFocused = tabFocusedStationId === st.id;
+                const isVisited = mode === 'pathfinder' && visitedIds.has(st.id);
+                const lc = lineCount[st.id] ?? 0;
 
-              return (
-                <div
-                  key={st.id}
-                  title={`${st.name}${st.agency ? ` (${st.agency})` : ''} — ${lc} line${lc !== 1 ? 's' : ''}`}
-                  style={{
-                    ...stationRow,
-                    background: isTabFocused
-                      ? '#1e3a4a'
-                      : isSelected
-                      ? '#1a2a4a'
-                      : 'transparent',
-                    borderLeft: isTabFocused
-                      ? '2px solid #7ec8e3'
-                      : isSelected
-                      ? '2px solid #4a7aaa'
-                      : '2px solid transparent',
-                    opacity: mode === 'pathfinder' && !isVisited && currentRoute.length > 0 ? 0.5 : 1,
-                  }}
-                  onClick={() => handleStationClick(st.id)}
-                  onDoubleClick={() => handleStationDoubleClick(st.id)}
-                >
-                  <span style={{
-                    ...stationName,
-                    color: isSelected || isTabFocused ? '#e8e8f0' : '#bbb',
-                  }}>
-                    {st.name}
-                  </span>
-                  <div style={badgeRow}>
-                    {isVisited && mode === 'pathfinder' && (
-                      <span style={visitedBadge}>✓</span>
-                    )}
-                    {lc > 0 && (
-                      <span style={lineBadge}>{lc}</span>
-                    )}
+                return (
+                  <div
+                    key={st.id}
+                    title={`${st.name}${st.agency ? ` (${st.agency})` : ''} — ${lc} line${lc !== 1 ? 's' : ''}`}
+                    style={{
+                      ...stationRow,
+                      background: isTabFocused
+                        ? '#1e3a4a'
+                        : isSelected
+                        ? '#1a2a4a'
+                        : 'transparent',
+                      borderLeft: isTabFocused
+                        ? '2px solid #7ec8e3'
+                        : isSelected
+                        ? '2px solid #4a7aaa'
+                        : '2px solid transparent',
+                      opacity: mode === 'pathfinder' && !isVisited && currentRoute.length > 0 ? 0.5 : 1,
+                    }}
+                    onClick={() => handleStationClick(st.id)}
+                    onDoubleClick={() => handleStationDoubleClick(st.id)}
+                  >
+                    <span style={{
+                      ...stationName,
+                      color: isSelected || isTabFocused ? '#e8e8f0' : '#bbb',
+                    }}>
+                      {st.name}
+                    </span>
+                    <div style={badgeRow}>
+                      {isVisited && mode === 'pathfinder' && (
+                        <span style={visitedBadge}>✓</span>
+                      )}
+                      {lc > 0 && (
+                        <span style={lineBadge}>{lc}</span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        ))}
-      </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
 
-      {/* Station count */}
-      <div style={footer}>
-        {Object.keys(stations).length} station{Object.keys(stations).length !== 1 ? 's' : ''}
+        {/* Station count */}
+        <div style={footer}>
+          {Object.keys(stations).length} station{Object.keys(stations).length !== 1 ? 's' : ''}
+        </div>
       </div>
-    </div>
+      {/* Drag handle on the right edge */}
+      <div
+        className={`resize-handle${isDragging ? ' dragging' : ''}`}
+        onMouseDown={handleResizeMouseDown}
+        style={{ borderRight: '1px solid #1a1a35' }}
+      />
+    </>
   );
 }
+
+const containerStyle: React.CSSProperties = {
+  flexShrink: 0,
+  background: '#0f0f20',
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+  position: 'relative',
+};
 
 const headerStyle: React.CSSProperties = {
   display: 'flex',
@@ -223,7 +260,7 @@ const headerTitle: React.CSSProperties = {
   fontFamily: 'monospace',
   fontWeight: 700,
   color: '#7ec8e3',
-  fontSize: 12,
+  fontSize: 14,
 };
 
 const collapseBtn: React.CSSProperties = {
@@ -231,7 +268,7 @@ const collapseBtn: React.CSSProperties = {
   border: 'none',
   color: '#666',
   cursor: 'pointer',
-  fontSize: 11,
+  fontSize: 13,
   padding: '2px 4px',
   lineHeight: 1,
 };
@@ -248,8 +285,8 @@ const searchInput: React.CSSProperties = {
   borderRadius: 3,
   color: '#e8e8f0',
   fontFamily: 'monospace',
-  fontSize: 11,
-  padding: '3px 6px',
+  fontSize: 13,
+  padding: '4px 7px',
   outline: 'none',
   boxSizing: 'border-box',
 };
@@ -261,7 +298,7 @@ const listContainer: React.CSSProperties = {
 
 const agencyHeader: React.CSSProperties = {
   padding: '4px 8px 2px',
-  fontSize: 9,
+  fontSize: 10,
   color: '#556',
   textTransform: 'uppercase',
   letterSpacing: 1,
@@ -272,7 +309,7 @@ const stationRow: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  padding: '4px 8px',
+  padding: '5px 8px',
   cursor: 'pointer',
   borderRadius: 0,
   gap: 4,
@@ -281,7 +318,7 @@ const stationRow: React.CSSProperties = {
 
 const stationName: React.CSSProperties = {
   fontFamily: 'monospace',
-  fontSize: 11,
+  fontSize: 13,
   flex: 1,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -296,17 +333,17 @@ const badgeRow: React.CSSProperties = {
 };
 
 const visitedBadge: React.CSSProperties = {
-  fontSize: 9,
+  fontSize: 11,
   color: '#5ec870',
 };
 
 const lineBadge: React.CSSProperties = {
-  fontSize: 9,
+  fontSize: 11,
   background: '#1e2e4e',
   color: '#7ec8e3',
   borderRadius: 8,
   padding: '0 4px',
-  minWidth: 14,
+  minWidth: 16,
   textAlign: 'center',
   fontFamily: 'monospace',
 };
@@ -315,14 +352,14 @@ const emptyHint: React.CSSProperties = {
   padding: '12px 8px',
   color: '#445',
   fontFamily: 'monospace',
-  fontSize: 11,
+  fontSize: 13,
   fontStyle: 'italic',
 };
 
 const footer: React.CSSProperties = {
   padding: '5px 8px',
   borderTop: '1px solid #1a1a30',
-  fontSize: 10,
+  fontSize: 12,
   color: '#445',
   fontFamily: 'monospace',
   flexShrink: 0,

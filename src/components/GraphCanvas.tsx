@@ -5,7 +5,7 @@ import type { Connection } from '../engine/graph.js';
 import { ConnectionPicker } from './ConnectionPicker.js';
 
 const STATION_RADIUS = 12;
-const HIT_THRESHOLD = 8;
+const HIT_THRESHOLD = 10;
 const PARALLEL_OFFSET = 5; // px between parallel lines
 
 /**
@@ -32,6 +32,13 @@ interface DragState {
   offsetY: number;
 }
 
+interface PanState {
+  startX: number;
+  startY: number;
+  startPanX: number;
+  startPanY: number;
+}
+
 /** Returns the distance from point (px,py) to segment (ax,ay)-(bx,by). */
 function pointToSegmentDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax;
@@ -46,11 +53,35 @@ export function GraphCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const panRef = useRef<PanState | null>(null);
+  const lastLineClickRef = useRef<{ x: number; y: number; lineIds: string[]; idx: number } | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const [pickerState, setPickerState] = useState<{
     toStationId: string;
     connections: Connection[];
   } | null>(null);
+
+  // Zoom/pan state — keep both React state (for re-render) and refs (for sync access in handlers)
+  const [zoom, setZoom] = useState(1.0);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const zoomRef = useRef(1.0);
+  const panXRef = useRef(0);
+  const panYRef = useRef(0);
+  const [isPanning, setIsPanning] = useState(false);
+
+  // Keep refs in sync
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  useEffect(() => { panXRef.current = panX; }, [panX]);
+  useEffect(() => { panYRef.current = panY; }, [panY]);
+
+  /** Convert screen coordinates to world coordinates */
+  function screenToWorld(sx: number, sy: number): { x: number; y: number } {
+    return {
+      x: (sx - panXRef.current) / zoomRef.current,
+      y: (sy - panYRef.current) / zoomRef.current,
+    };
+  }
 
   const {
     mode,
@@ -89,6 +120,39 @@ export function GraphCanvas() {
     return () => obs.disconnect();
   }, []);
 
+  // Wheel zoom (non-passive listener so we can preventDefault)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      const newZoom = Math.max(0.25, Math.min(4.0, zoomRef.current * factor));
+
+      // Keep the world point under the cursor stationary
+      const worldX = (mouseX - panXRef.current) / zoomRef.current;
+      const worldY = (mouseY - panYRef.current) / zoomRef.current;
+      const newPanX = mouseX - worldX * newZoom;
+      const newPanY = mouseY - worldY * newZoom;
+
+      zoomRef.current = newZoom;
+      panXRef.current = newPanX;
+      panYRef.current = newPanY;
+      setZoom(newZoom);
+      setPanX(newPanX);
+      setPanY(newPanY);
+    };
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [canvasSize]);
+
   // Draw
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -102,15 +166,23 @@ export function GraphCanvas() {
     ctx.fillStyle = '#0d0d1a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw grid dots
+    // Draw grid dots offset by pan (screen space — intentionally not scaled)
     ctx.fillStyle = '#1e1e3a';
-    for (let x = 0; x < canvas.width; x += 40) {
-      for (let y = 0; y < canvas.height; y += 40) {
+    const gridSpacing = 40;
+    const startX = ((panX % gridSpacing) + gridSpacing) % gridSpacing;
+    const startY = ((panY % gridSpacing) + gridSpacing) % gridSpacing;
+    for (let gx = startX; gx < canvas.width; gx += gridSpacing) {
+      for (let gy = startY; gy < canvas.height; gy += gridSpacing) {
         ctx.beginPath();
-        ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+        ctx.arc(gx, gy, 1.5, 0, Math.PI * 2);
         ctx.fill();
       }
     }
+
+    // Apply zoom/pan transform for world-space drawing
+    ctx.save();
+    ctx.translate(panX, panY);
+    ctx.scale(zoom, zoom);
 
     // Build segment line map for parallel rendering
     const segLineMap = buildSegmentLineMap(lines);
@@ -129,15 +201,12 @@ export function GraphCanvas() {
         const b = stations[line.stops[i + 1]];
         if (!a || !b) continue;
 
-        // Compute parallel offset
         const segKeyAB = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
         const lineIds = segLineMap.get(segKeyAB) ?? [line.id];
         const totalLines = lineIds.length;
         const lineIdx = lineIds.indexOf(line.id);
-        // Center offsets so lines are symmetric around the original path
         const offsetMag = (lineIdx - (totalLines - 1) / 2) * PARALLEL_OFFSET;
 
-        // Perpendicular direction
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const len = Math.hypot(dx, dy) || 1;
@@ -149,7 +218,6 @@ export function GraphCanvas() {
         const bx2 = b.x + nx * offsetMag;
         const by2 = b.y + ny * offsetMag;
 
-        // Glow for selected
         if (isSelected) {
           ctx.lineWidth = 10;
           ctx.globalAlpha = 0.35;
@@ -166,9 +234,9 @@ export function GraphCanvas() {
         ctx.lineTo(bx2, by2);
         ctx.stroke();
 
-        // Travel time label on the offset midpoint
+        // Travel time label
         ctx.fillStyle = line.color || '#888';
-        ctx.font = '10px monospace';
+        ctx.font = '13px monospace';
         ctx.textAlign = 'center';
         const mx = (ax2 + bx2) / 2;
         const my = (ay2 + by2) / 2 - 6;
@@ -184,7 +252,6 @@ export function GraphCanvas() {
       const isSelected = edge.id === selectedRunEdgeId;
       const edgeColor = '#f0c060';
 
-      // Glow for selected
       if (isSelected) {
         ctx.strokeStyle = edgeColor;
         ctx.lineWidth = 8;
@@ -205,7 +272,6 @@ export function GraphCanvas() {
       ctx.lineTo(to.x, to.y);
       ctx.stroke();
 
-      // Arrow tip
       const angle = Math.atan2(to.y - from.y, to.x - from.x);
       const mx = (from.x + to.x) / 2;
       const my = (from.y + to.y) / 2;
@@ -219,15 +285,14 @@ export function GraphCanvas() {
       ctx.stroke();
       ctx.setLineDash([6, 4]);
 
-      // Label
       ctx.fillStyle = edgeColor;
-      ctx.font = '10px monospace';
+      ctx.font = '13px monospace';
       ctx.textAlign = 'center';
       ctx.fillText(`${edge.timeMin}m`, mx, my - 8);
     }
     ctx.setLineDash([]);
 
-    // Pathfinder: draw route arrows
+    // Pathfinder route arrows
     if (mode === 'pathfinder' && currentRoute.length >= 2) {
       for (let i = 0; i < currentRoute.length - 1; i++) {
         const step = currentRoute[i];
@@ -242,11 +307,7 @@ export function GraphCanvas() {
         ctx.strokeStyle = lineColor;
         ctx.lineWidth = 3;
         ctx.lineCap = 'round';
-        if (isRun) {
-          ctx.setLineDash([8, 5]);
-        } else {
-          ctx.setLineDash([]);
-        }
+        ctx.setLineDash(isRun ? [8, 5] : []);
 
         ctx.beginPath();
         ctx.moveTo(from.x, from.y);
@@ -254,7 +315,6 @@ export function GraphCanvas() {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Arrow tip near destination
         const angle = Math.atan2(to.y - from.y, to.x - from.x);
         const tipX = to.x - (STATION_RADIUS + 6) * Math.cos(angle);
         const tipY = to.y - (STATION_RADIUS + 6) * Math.sin(angle);
@@ -284,10 +344,8 @@ export function GraphCanvas() {
       const isPathfinderCurrent = mode === 'pathfinder' && pathfinderSelectedStation === st.id;
       const isVisited = mode === 'pathfinder' && visitedStepNums[st.id] !== undefined;
       const stepNums = visitedStepNums[st.id] ?? [];
-
       const isTabFocused = tabFocusedStationId === st.id;
 
-      // Tab-focus ring (outermost, dashed)
       if (isTabFocused) {
         ctx.beginPath();
         ctx.arc(st.x, st.y, STATION_RADIUS + 9, 0, Math.PI * 2);
@@ -298,7 +356,6 @@ export function GraphCanvas() {
         ctx.setLineDash([]);
       }
 
-      // Outer ring for selected / pathfinder current
       if (isSelected || isPathfinderCurrent) {
         ctx.beginPath();
         ctx.arc(st.x, st.y, STATION_RADIUS + 5, 0, Math.PI * 2);
@@ -307,7 +364,6 @@ export function GraphCanvas() {
         ctx.stroke();
       }
 
-      // Station circle
       ctx.beginPath();
       ctx.arc(st.x, st.y, STATION_RADIUS, 0, Math.PI * 2);
       let fillColor = isSelected ? '#7ec8e3' : '#2a4a6a';
@@ -322,36 +378,49 @@ export function GraphCanvas() {
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Step number badge in pathfinder
       if (mode === 'pathfinder' && stepNums.length > 0) {
         const label = stepNums[stepNums.length - 1].toString();
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 9px monospace';
+        ctx.font = 'bold 11px monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, st.x, st.y);
         ctx.textBaseline = 'alphabetic';
       }
 
-      // Name label
+      // Station name label
       ctx.fillStyle = mode === 'pathfinder' && !isVisited ? '#556' : '#e8e8f0';
       ctx.font = '11px monospace';
       ctx.textAlign = 'center';
       ctx.fillText(st.name, st.x, st.y - STATION_RADIUS - 6);
 
       // Agency sub-label
-      if (st.agency) {
+      if (st.agencies && st.agencies.length > 0) {
         ctx.fillStyle = '#888';
-        ctx.font = '9px monospace';
-        ctx.fillText(st.agency, st.x, st.y + STATION_RADIUS + 14);
+        ctx.font = '11px monospace';
+        ctx.fillText(st.agencies.join(', '), st.x, st.y + STATION_RADIUS + 16);
       }
     }
-  }, [stations, lines, runEdges, selectedStationIds, selectedLineId, selectedRunEdgeId, canvasSize, mode, currentRoute, pathfinderSelectedStation, tabFocusedStationId]);
 
-  function getStationAtPoint(x: number, y: number): string | null {
+    ctx.restore();
+
+    // HUD: zoom level (screen space)
+    const hudText = `zoom: ${zoom.toFixed(2)}x`;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(8, 8, 90, 22);
+    ctx.fillStyle = '#7ec8e3';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(hudText, 14, 19);
+    ctx.textBaseline = 'alphabetic';
+
+  }, [stations, lines, runEdges, selectedStationIds, selectedLineId, selectedRunEdgeId, canvasSize, mode, currentRoute, pathfinderSelectedStation, tabFocusedStationId, zoom, panX, panY]);
+
+  function getStationAtPoint(worldX: number, worldY: number): string | null {
     for (const st of Object.values(stations)) {
-      const dx = st.x - x;
-      const dy = st.y - y;
+      const dx = st.x - worldX;
+      const dy = st.y - worldY;
       if (Math.sqrt(dx * dx + dy * dy) <= STATION_RADIUS + 4) {
         return st.id;
       }
@@ -359,8 +428,7 @@ export function GraphCanvas() {
     return null;
   }
 
-  /** Returns the id of the closest transit line segment within HIT_THRESHOLD, or null. */
-  function getLineAtPoint(x: number, y: number): string | null {
+  function getLineAtPoint(worldX: number, worldY: number): string | null {
     let bestId: string | null = null;
     let bestDist = HIT_THRESHOLD;
     for (const line of Object.values(lines)) {
@@ -368,7 +436,7 @@ export function GraphCanvas() {
         const a = stations[line.stops[i]];
         const b = stations[line.stops[i + 1]];
         if (!a || !b) continue;
-        const dist = pointToSegmentDist(x, y, a.x, a.y, b.x, b.y);
+        const dist = pointToSegmentDist(worldX, worldY, a.x, a.y, b.x, b.y);
         if (dist < bestDist) {
           bestDist = dist;
           bestId = line.id;
@@ -378,15 +446,14 @@ export function GraphCanvas() {
     return bestId;
   }
 
-  /** Returns the id of the closest run edge within HIT_THRESHOLD, or null. */
-  function getRunEdgeAtPoint(x: number, y: number): string | null {
+  function getRunEdgeAtPoint(worldX: number, worldY: number): string | null {
     let bestId: string | null = null;
     let bestDist = HIT_THRESHOLD;
     for (const edge of runEdges) {
       const from = stations[edge.from];
       const to = stations[edge.to];
       if (!from || !to) continue;
-      const dist = pointToSegmentDist(x, y, from.x, from.y, to.x, to.y);
+      const dist = pointToSegmentDist(worldX, worldY, from.x, from.y, to.x, to.y);
       if (dist < bestDist) {
         bestDist = dist;
         bestId = edge.id;
@@ -398,15 +465,28 @@ export function GraphCanvas() {
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const rect = canvasRef.current!.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const screenX = e.clientX - rect.left;
+      const screenY = e.clientY - rect.top;
 
-      // Pathfinder mode click handling
+      // Middle mouse button or Ctrl+left drag = pan
+      if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
+        e.preventDefault();
+        setIsPanning(true);
+        panRef.current = {
+          startX: screenX,
+          startY: screenY,
+          startPanX: panXRef.current,
+          startPanY: panYRef.current,
+        };
+        return;
+      }
+
+      const { x, y } = screenToWorld(screenX, screenY);
+
       if (mode === 'pathfinder') {
         const hit = getStationAtPoint(x, y);
         if (!hit) return;
 
-        // If no route yet, start here
         if (currentRoute.length === 0) {
           addRouteStep(hit, { type: 'run', edge: { id: '', from: hit, to: hit, timeMin: 0, bidirectional: false } });
           return;
@@ -414,14 +494,12 @@ export function GraphCanvas() {
 
         const lastStep = currentRoute[currentRoute.length - 1];
         const fromStationId = lastStep.stationId;
-
-        // Don't navigate to same station
         if (hit === fromStationId) return;
 
         const graphState = { stations, lines, runEdges, transfers };
         const connections = getConnectionsBetween(graphState, fromStationId, hit);
 
-        if (connections.length === 0) return; // no connection
+        if (connections.length === 0) return;
         if (connections.length === 1) {
           addRouteStep(hit, connections[0].type === 'line'
             ? { type: 'line', lineId: connections[0].lineId, fromIdx: connections[0].fromIdx, toIdx: connections[0].toIdx }
@@ -448,7 +526,6 @@ export function GraphCanvas() {
           const st = stations[hitStation];
           dragRef.current = { stationId: hitStation, offsetX: x - st.x, offsetY: y - st.y };
         } else {
-          // Check for line or run edge hit
           const hitLine = getLineAtPoint(x, y);
           if (hitLine) {
             setSelectedLineId(hitLine);
@@ -472,7 +549,6 @@ export function GraphCanvas() {
         const hit = getStationAtPoint(x, y);
         if (!hit) return;
         if (selectedStationIds.includes(hit)) {
-          // deselect
           setSelectedStationIds(selectedStationIds.filter(id => id !== hit));
         } else {
           setSelectedStationIds([...selectedStationIds, hit]);
@@ -484,10 +560,24 @@ export function GraphCanvas() {
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (panRef.current) {
+        const rect = canvasRef.current!.getBoundingClientRect();
+        const screenX = e.clientX - rect.left;
+        const screenY = e.clientY - rect.top;
+        const newPanX = panRef.current.startPanX + (screenX - panRef.current.startX);
+        const newPanY = panRef.current.startPanY + (screenY - panRef.current.startY);
+        panXRef.current = newPanX;
+        panYRef.current = newPanY;
+        setPanX(newPanX);
+        setPanY(newPanY);
+        return;
+      }
+
       if (!dragRef.current) return;
       const rect = canvasRef.current!.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const screenX = e.clientX - rect.left;
+      const screenY = e.clientY - rect.top;
+      const { x, y } = screenToWorld(screenX, screenY);
       updateStation(dragRef.current.stationId, {
         x: x - dragRef.current.offsetX,
         y: y - dragRef.current.offsetY,
@@ -498,25 +588,44 @@ export function GraphCanvas() {
 
   const handleMouseUp = useCallback(() => {
     dragRef.current = null;
+    panRef.current = null;
+    setIsPanning(false);
   }, []);
 
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (mode !== 'builder' || selectedTool !== 'select') return;
       const rect = canvasRef.current!.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      // Prefer line hit on double-click (ignore station)
-      const hitLine = getLineAtPoint(x, y);
-      if (hitLine) {
-        setSelectedLineId(hitLine);
-        setSelectedStationIds([]);
+      const screenX = e.clientX - rect.left;
+      const screenY = e.clientY - rect.top;
+      const { x, y } = screenToWorld(screenX, screenY);
+
+      if (mode === 'builder' && selectedTool === 'select') {
+        const hitLine = getLineAtPoint(x, y);
+        if (hitLine) {
+          setSelectedLineId(hitLine);
+          setSelectedStationIds([]);
+          return;
+        }
+        const hitEdge = getRunEdgeAtPoint(x, y);
+        if (hitEdge) {
+          setSelectedRunEdgeId(hitEdge);
+          setSelectedStationIds([]);
+          return;
+        }
+        const hitStation = getStationAtPoint(x, y);
+        if (!hitStation) {
+          // Reset zoom/pan
+          zoomRef.current = 1.0; panXRef.current = 0; panYRef.current = 0;
+          setZoom(1.0); setPanX(0); setPanY(0);
+        }
         return;
       }
-      const hitEdge = getRunEdgeAtPoint(x, y);
-      if (hitEdge) {
-        setSelectedRunEdgeId(hitEdge);
-        setSelectedStationIds([]);
+
+      // In pathfinder mode, double-click empty space resets zoom too
+      const hitStation = getStationAtPoint(x, y);
+      if (!hitStation) {
+        zoomRef.current = 1.0; panXRef.current = 0; panYRef.current = 0;
+        setZoom(1.0); setPanX(0); setPanY(0);
       }
     },
     [mode, selectedTool, stations, lines, runEdges, setSelectedLineId, setSelectedRunEdgeId, setSelectedStationIds]
@@ -531,8 +640,9 @@ export function GraphCanvas() {
       e.preventDefault();
       if (mode !== 'builder') return;
       const rect = canvasRef.current!.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const screenX = e.clientX - rect.left;
+      const screenY = e.clientY - rect.top;
+      const { x, y } = screenToWorld(screenX, screenY);
       const hit = getStationAtPoint(x, y);
       if (hit) {
         setRightClickMenu({ x: e.clientX, y: e.clientY, stationId: hit });
@@ -541,7 +651,9 @@ export function GraphCanvas() {
     [mode, stations]
   );
 
-  const canvasCursor = mode === 'pathfinder'
+  const canvasCursor = isPanning
+    ? 'grabbing'
+    : mode === 'pathfinder'
     ? 'pointer'
     : selectedTool === 'addStation'
     ? 'crosshair'
@@ -567,7 +679,7 @@ export function GraphCanvas() {
         {mode === 'pathfinder' && currentRoute.length === 0 && 'Click a station to start your route'}
         {mode === 'pathfinder' && currentRoute.length > 0 && 'Click a connected station to add to route'}
         {mode === 'builder' && selectedTool === 'addStation' && 'Click on canvas to place a station'}
-        {mode === 'builder' && selectedTool === 'select' && 'Click or double-click a line/edge to edit it'}
+        {mode === 'builder' && selectedTool === 'select' && 'Scroll to zoom • Ctrl+drag or middle-drag to pan • Double-click empty to reset zoom'}
         {mode === 'builder' && selectedTool === 'addLine' && 'Click stations in order to build a line (2+ required), then configure in the panel'}
         {mode === 'builder' && selectedTool === 'addRunEdge' && 'Click exactly 2 stations to create a run edge'}
       </div>
@@ -603,7 +715,6 @@ function RightClickMenu({
   const { stations, lines, setSelectedLineId, setSelectedStationIds } = useStore();
   const station = stations[stationId];
 
-  // Find lines that pass through this station
   const linesThrough = Object.values(lines).filter(l => l.stops.includes(stationId));
 
   useEffect(() => {
@@ -623,21 +734,21 @@ function RightClickMenu({
         border: '1px solid #333',
         borderRadius: 4,
         fontFamily: 'monospace',
-        fontSize: 12,
+        fontSize: 13,
         zIndex: 1000,
         minWidth: 160,
         boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
       }}
       onClick={e => e.stopPropagation()}
     >
-      <div style={{ padding: '6px 10px', color: '#7ec8e3', borderBottom: '1px solid #333', fontWeight: 700, fontSize: 11 }}>
+      <div style={{ padding: '6px 10px', color: '#7ec8e3', borderBottom: '1px solid #333', fontWeight: 700, fontSize: 13 }}>
         {station?.name ?? stationId}
       </div>
       {linesThrough.length === 0 ? (
         <div style={{ padding: '6px 10px', color: '#555' }}>No lines through this station</div>
       ) : (
         <>
-          <div style={{ padding: '4px 10px', color: '#888', fontSize: 10 }}>Lines through this station:</div>
+          <div style={{ padding: '4px 10px', color: '#888', fontSize: 11 }}>Lines through this station:</div>
           {linesThrough.map(line => (
             <div
               key={line.id}
@@ -662,7 +773,7 @@ function RightClickMenu({
         </>
       )}
       <div
-        style={{ padding: '5px 10px', color: '#666', cursor: 'pointer', borderTop: '1px solid #222', fontSize: 11 }}
+        style={{ padding: '5px 10px', color: '#666', cursor: 'pointer', borderTop: '1px solid #222', fontSize: 12 }}
         onClick={onClose}
       >
         Close
@@ -686,7 +797,7 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     color: '#666',
     fontFamily: 'monospace',
-    fontSize: 11,
+    fontSize: 12,
     pointerEvents: 'none',
   },
 };

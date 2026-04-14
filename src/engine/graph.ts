@@ -19,6 +19,8 @@ export type Connection = LineConnection | RunConnection;
 /**
  * For every pair of lines that share a station, generate a Transfer entry.
  * Default 0 min if same agency, 1 min if different agency.
+ * For stations with agencies[], a transfer is "same agency" (0 min) if the two lines
+ * share ANY agency in common with the station's agencies list.
  * Generates transfers in both directions (A→B and B→A).
  */
 export function generateTransfers(state: GraphState): Transfer[] {
@@ -33,7 +35,20 @@ export function generateTransfers(state: GraphState): Transfer[] {
 
       for (const stop of lineB.stops) {
         if (stopsA.has(stop)) {
-          const transferMin = lineA.agency === lineB.agency ? 0 : 1;
+          let transferMin: number;
+          const station = state.stations[stop];
+          if (station && station.agencies && station.agencies.length > 0) {
+            // Same agency if either line's agency is in the station's agencies list
+            // AND both lines share an agency listed at this station
+            const stationAgencySet = new Set(station.agencies);
+            const aInStation = stationAgencySet.has(lineA.agency);
+            const bInStation = stationAgencySet.has(lineB.agency);
+            // "same agency" means both lines operate under a common agency at this station
+            transferMin = (aInStation && bInStation) ? 0 : 1;
+          } else {
+            // No station agencies defined: fall back to line agency comparison
+            transferMin = lineA.agency === lineB.agency ? 0 : 1;
+          }
 
           transfers.push({
             stationId: stop,
@@ -188,8 +203,9 @@ export function computeStepTiming(
       );
     }
     // Travel time is the sum of travelTimes between toIdx and fromIdx (same segments, reversed)
+    const reverseSegmentTimes = line.reverseTravelTimes ?? line.travelTimes;
     for (let i = toIdx; i < fromIdx; i++) {
-      travelTime += line.travelTimes[i];
+      travelTime += reverseSegmentTimes[i];
     }
   } else {
     // Forward travel: fromIdx < toIdx

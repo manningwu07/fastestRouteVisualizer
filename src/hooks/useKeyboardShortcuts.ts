@@ -12,7 +12,6 @@ function isTypingTarget(target: EventTarget | null): boolean {
 
 export function useKeyboardShortcuts(opts: {
   onToggleShortcuts: () => void;
-  onSaveGraph: () => void;
   onLoadGraph: () => void;
 }) {
   const store = useStore();
@@ -38,9 +37,17 @@ export function useKeyboardShortcuts(opts: {
         return;
       }
 
+      if (matchesBinding('export_graph', e)) {
+        e.preventDefault();
+        const { activeGraphId, exportGraph } = s;
+        exportGraph(activeGraphId);
+        return;
+      }
+
       if (matchesBinding('save_graph', e)) {
         e.preventDefault();
-        o.onSaveGraph();
+        s.saveCurrentGraph();
+        s.showToast('Saved!');
         return;
       }
 
@@ -98,10 +105,16 @@ export function useKeyboardShortcuts(opts: {
           return;
         }
 
+        if (matchesBinding('builder_undo_delete', e)) {
+          e.preventDefault();
+          s.undoBuilderDelete();
+          return;
+        }
+
         if (matchesBinding('delete_selected', e) || e.key === 'Backspace' && !isTypingTarget(e.target)) {
           if (s.selectedStationIds.length > 0) {
             e.preventDefault();
-            s.selectedStationIds.forEach(id => s.removeStation(id));
+            s.removeStations(s.selectedStationIds);
             s.setSelectedStationIds([]);
             return;
           }

@@ -11,7 +11,8 @@ export const DEFAULT_KEYBINDINGS: KeyBinding[] = [
   { id: 'mode_builder', label: 'Builder mode', defaultKey: '1', defaultModifiers: [], category: 'general' },
   { id: 'mode_pathfinder', label: 'Pathfinder mode', defaultKey: '2', defaultModifiers: [], category: 'general' },
   { id: 'deselect', label: 'Deselect / close panels', defaultKey: 'Escape', defaultModifiers: [], category: 'general' },
-  { id: 'save_graph', label: 'Save graph', defaultKey: 's', defaultModifiers: ['ctrl'], category: 'general' },
+  { id: 'save_graph', label: 'Save graph to localStorage', defaultKey: 's', defaultModifiers: ['ctrl'], category: 'general' },
+  { id: 'export_graph', label: 'Export graph as file', defaultKey: 's', defaultModifiers: ['ctrl', 'shift'], category: 'general' },
   { id: 'load_graph', label: 'Load graph', defaultKey: 'o', defaultModifiers: ['ctrl'], category: 'general' },
   { id: 'toggle_shortcuts', label: 'Toggle shortcuts panel', defaultKey: '?', defaultModifiers: [], category: 'general' },
 
@@ -20,6 +21,7 @@ export const DEFAULT_KEYBINDINGS: KeyBinding[] = [
   { id: 'tool_add_station', label: 'Add Station tool', defaultKey: 'n', defaultModifiers: [], category: 'builder' },
   { id: 'tool_add_line', label: 'Add Line tool', defaultKey: 'l', defaultModifiers: [], category: 'builder' },
   { id: 'tool_add_run_edge', label: 'Add Run Edge tool', defaultKey: 'r', defaultModifiers: [], category: 'builder' },
+  { id: 'builder_undo_delete', label: 'Undo last builder delete', defaultKey: 'z', defaultModifiers: ['ctrl'], category: 'builder' },
   { id: 'delete_selected', label: 'Delete selected', defaultKey: 'Delete', defaultModifiers: [], category: 'builder' },
   { id: 'edit_selected', label: 'Edit selected item', defaultKey: 'e', defaultModifiers: [], category: 'builder' },
   { id: 'cycle_stations_forward', label: 'Cycle stations forward', defaultKey: 'Tab', defaultModifiers: [], category: 'builder' },

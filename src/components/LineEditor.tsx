@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../state/store.js';
+import { ColorPicker } from './ColorPicker.js';
+import type { LineSchedule } from '../engine/types.js';
 
 export function LineEditor() {
   const {
@@ -13,26 +15,42 @@ export function LineEditor() {
 
   const line = selectedLineId ? lines[selectedLineId] : null;
 
-  const [lineName, setLineName] = useState('');
   const [color, setColor] = useState('#e74c3c');
   const [agency, setAgency] = useState('');
   const [travelTimes, setTravelTimes] = useState<number[]>([]);
-  const [firstDep, setFirstDep] = useState(360);
-  const [lastDep, setLastDep] = useState(1380);
-  const [headway, setHeadway] = useState(10);
+
+  // Forward schedule
+  const [fwdFirst, setFwdFirst] = useState(360);
+  const [fwdLast, setFwdLast] = useState(1380);
+  const [fwdHeadway, setFwdHeadway] = useState(10);
+
+  // Reverse schedule
+  const [revFirst, setRevFirst] = useState(360);
+  const [revLast, setRevLast] = useState(1380);
+  const [revHeadway, setRevHeadway] = useState(10);
+
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmRemoveStop, setConfirmRemoveStop] = useState<string | null>(null);
 
   // Sync local state when selected line changes
   useEffect(() => {
     if (line) {
-      setLineName(line.agency && line.color ? (line as any).name ?? '' : '');
       setColor(line.color);
       setAgency(line.agency);
       setTravelTimes([...line.travelTimes]);
-      setFirstDep(line.firstDeparture);
-      setLastDep(line.lastDeparture);
-      setHeadway(line.headwayMin);
+      setFwdFirst(line.forwardSchedule.firstDeparture);
+      setFwdLast(line.forwardSchedule.lastDeparture);
+      setFwdHeadway(line.forwardSchedule.headwayMin);
+      if (line.reverseSchedule) {
+        setRevFirst(line.reverseSchedule.firstDeparture);
+        setRevLast(line.reverseSchedule.lastDeparture);
+        setRevHeadway(line.reverseSchedule.headwayMin);
+      } else {
+        // Default reverse to same as forward when no reverseSchedule
+        setRevFirst(line.forwardSchedule.firstDeparture);
+        setRevLast(line.forwardSchedule.lastDeparture);
+        setRevHeadway(line.forwardSchedule.headwayMin);
+      }
       setConfirmDelete(false);
       setConfirmRemoveStop(null);
     }
@@ -61,15 +79,23 @@ export function LineEditor() {
     return (h || 0) * 60 + (m || 0);
   }
 
-  function saveAll() {
+  function saveAll(overrides?: { color?: string }) {
     if (!selectedLineId) return;
+    const forwardSchedule: LineSchedule = {
+      firstDeparture: fwdFirst,
+      lastDeparture: fwdLast,
+      headwayMin: fwdHeadway,
+    };
+    const reverseSchedule: LineSchedule | undefined = line.bidirectional
+      ? { firstDeparture: revFirst, lastDeparture: revLast, headwayMin: revHeadway }
+      : undefined;
+
     updateLine(selectedLineId, {
-      color,
+      color: overrides?.color ?? color,
       agency: agency.trim() || 'Default',
       travelTimes: travelTimes.map(t => Math.max(1, t)),
-      firstDeparture: firstDep,
-      lastDeparture: lastDep,
-      headwayMin: headway,
+      forwardSchedule,
+      reverseSchedule,
     });
   }
 
@@ -77,11 +103,9 @@ export function LineEditor() {
     if (!selectedLineId) return;
     const newStops = line.stops.filter(s => s !== stopId);
     if (newStops.length < 2) {
-      // removing this stop would make the line invalid — ask confirmation
       setConfirmRemoveStop(stopId);
       return;
     }
-    // Rebuild travel times
     const idx = line.stops.indexOf(stopId);
     const newTimes = [...line.travelTimes];
     if (idx === 0) {
@@ -89,7 +113,6 @@ export function LineEditor() {
     } else if (idx === line.stops.length - 1) {
       newTimes.splice(newTimes.length - 1, 1);
     } else {
-      // merge the two segments: keep the first one, remove the second
       newTimes.splice(idx, 1);
     }
     updateLine(selectedLineId, { stops: newStops, travelTimes: newTimes });
@@ -103,6 +126,25 @@ export function LineEditor() {
     setSelectedLineId(null);
   }
 
+  // Compute absolute departure time at stop index for display
+  function depTimeAtStop(idx: number): string {
+    let t = fwdFirst;
+    for (let i = 0; i < idx; i++) {
+      t += travelTimes[i] ?? 0;
+    }
+    return formatTime(t);
+  }
+
+  function revDepTimeAtStop(reverseIdx: number): string {
+    let t = revFirst;
+    for (let i = 0; i < reverseIdx; i++) {
+      t += travelTimes[travelTimes.length - 1 - i] ?? 0;
+    }
+    return formatTime(t);
+  }
+
+  const reversedStops = [...line.stops].reverse();
+
   return (
     <div style={styles.container}>
       <div style={styles.headerRow}>
@@ -113,16 +155,7 @@ export function LineEditor() {
       </div>
 
       <label style={styles.label}>Color</label>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <input
-          type="color"
-          value={color}
-          onChange={e => setColor(e.target.value)}
-          onBlur={saveAll}
-          style={{ width: 40, height: 28, border: 'none', background: 'none', cursor: 'pointer' }}
-        />
-        <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#aaa' }}>{color}</span>
-      </div>
+      <ColorPicker value={color} onChange={(c) => { setColor(c); saveAll({ color: c }); }} />
 
       <label style={styles.label}>Agency</label>
       <input
@@ -130,97 +163,175 @@ export function LineEditor() {
         value={agency}
         onChange={e => setAgency(e.target.value)}
         onBlur={saveAll}
+        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
         placeholder="Metro, Bus Co…"
       />
 
-      <label style={styles.label}>Stops & Travel Times</label>
-      <div style={styles.stopList}>
-        {line.stops.map((stopId, i) => {
-          const st = stations[stopId];
-          const nextSt = i < line.stops.length - 1 ? stations[line.stops[i + 1]] : null;
-          return (
-            <React.Fragment key={stopId}>
-              <div style={styles.stopRow}>
-                <span style={{ ...styles.stopDot, background: line.color }} />
-                <span style={styles.stopName}>{st?.name ?? stopId}</span>
-                <button
-                  style={styles.removeStopBtn}
-                  onClick={() => handleRemoveStop(stopId)}
-                  title="Remove stop"
-                >
-                  ×
-                </button>
-              </div>
-              {confirmRemoveStop === stopId && (
-                <div style={styles.confirmBox}>
-                  <span style={{ color: '#e8a0a0', fontSize: 11, fontFamily: 'monospace' }}>
-                    Removing this stop will delete the line (only 1 stop left). Delete line?
-                  </span>
-                  <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                    <button style={styles.confirmDeleteBtn} onClick={handleDeleteLine}>Delete Line</button>
-                    <button style={styles.cancelBtn} onClick={() => setConfirmRemoveStop(null)}>Cancel</button>
+      {/* Forward stops & travel times */}
+      <div style={styles.schedSection}>
+        <div style={styles.schedSectionHeader}>
+          <span style={{ color: line.color }}>▶</span> Forward — Stops & Travel Times
+        </div>
+        <div style={styles.stopList}>
+          {line.stops.map((stopId, i) => {
+            const st = stations[stopId];
+            const nextSt = i < line.stops.length - 1 ? stations[line.stops[i + 1]] : null;
+            return (
+              <React.Fragment key={stopId}>
+                <div style={styles.stopRow}>
+                  <span style={{ ...styles.stopDot, background: line.color }} />
+                  <span style={styles.stopName}>{st?.name ?? stopId}</span>
+                  <span style={styles.stopTime}>{depTimeAtStop(i)}</span>
+                  <button
+                    style={styles.removeStopBtn}
+                    onClick={() => handleRemoveStop(stopId)}
+                    title="Remove stop"
+                  >
+                    ×
+                  </button>
+                </div>
+                {confirmRemoveStop === stopId && (
+                  <div style={styles.confirmBox}>
+                    <span style={{ color: '#e8a0a0', fontSize: 11, fontFamily: 'monospace' }}>
+                      Removing this stop will delete the line (only 1 stop left). Delete line?
+                    </span>
+                    <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                      <button style={styles.confirmDeleteBtn} onClick={handleDeleteLine}>Delete Line</button>
+                      <button style={styles.cancelBtn} onClick={() => setConfirmRemoveStop(null)}>Cancel</button>
+                    </div>
                   </div>
-                </div>
-              )}
-              {nextSt && (
-                <div style={styles.travelSegment}>
-                  <span style={styles.travelLabel}>{st?.name ?? stopId} → {nextSt.name}:</span>
-                  <input
-                    type="number"
-                    min={1}
-                    style={styles.smallInput}
-                    value={travelTimes[i] ?? 5}
-                    onChange={e => {
-                      const v = parseInt(e.target.value) || 1;
-                      setTravelTimes(prev => {
-                        const next = [...prev];
-                        next[i] = v;
-                        return next;
-                      });
-                    }}
-                    onBlur={saveAll}
-                  />
-                  <span style={styles.unit}>min</span>
-                </div>
-              )}
-            </React.Fragment>
-          );
-        })}
+                )}
+                {nextSt && (
+                  <div style={styles.travelSegment}>
+                    <span style={styles.travelLabel}>{st?.name ?? stopId} → {nextSt.name}:</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      style={styles.smallInput}
+                      value={travelTimes[i] ?? 5}
+                      onChange={e => {
+                        const raw = e.target.value.replace(/\D/g, '');
+                        const v = parseInt(raw) || 1;
+                        setTravelTimes(prev => {
+                          const next = [...prev];
+                          next[i] = v;
+                          return next;
+                        });
+                      }}
+                      onBlur={saveAll}
+                      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                    />
+                    <span style={styles.unit}>min</span>
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </div>
+
+        <div style={styles.schedGrid}>
+          <span style={styles.schedLabel}>First dep</span>
+          <input
+            type="time"
+            style={styles.timeInput}
+            value={formatTime(fwdFirst)}
+            onChange={e => setFwdFirst(parseTime(e.target.value))}
+            onBlur={saveAll}
+            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+          />
+          <span style={styles.schedLabel}>Last dep</span>
+          <input
+            type="time"
+            style={styles.timeInput}
+            value={formatTime(fwdLast)}
+            onChange={e => setFwdLast(parseTime(e.target.value))}
+            onBlur={saveAll}
+            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+          />
+          <span style={styles.schedLabel}>Headway</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input
+              type="text"
+              inputMode="numeric"
+              style={styles.smallInput}
+              value={fwdHeadway}
+              onChange={e => {
+                const raw = e.target.value.replace(/\D/g, '');
+                setFwdHeadway(parseInt(raw) || 1);
+              }}
+              onBlur={saveAll}
+              onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            />
+            <span style={styles.unit}>min</span>
+          </div>
+        </div>
       </div>
 
-      <label style={styles.label}>Schedule</label>
-      <div style={styles.schedRow}>
-        <span style={styles.schedLabel}>First dep</span>
-        <input
-          type="time"
-          style={styles.timeInput}
-          value={formatTime(firstDep)}
-          onChange={e => setFirstDep(parseTime(e.target.value))}
-          onBlur={saveAll}
-        />
-      </div>
-      <div style={styles.schedRow}>
-        <span style={styles.schedLabel}>Last dep</span>
-        <input
-          type="time"
-          style={styles.timeInput}
-          value={formatTime(lastDep)}
-          onChange={e => setLastDep(parseTime(e.target.value))}
-          onBlur={saveAll}
-        />
-      </div>
-      <div style={styles.schedRow}>
-        <span style={styles.schedLabel}>Headway</span>
-        <input
-          type="number"
-          min={1}
-          style={styles.smallInput}
-          value={headway}
-          onChange={e => setHeadway(parseInt(e.target.value) || 1)}
-          onBlur={saveAll}
-        />
-        <span style={styles.unit}>min</span>
-      </div>
+      {/* Reverse schedule (only when bidirectional) */}
+      {line.bidirectional && (
+        <div style={styles.schedSection}>
+          <div style={styles.schedSectionHeader}>
+            <span style={{ color: line.color }}>◀</span> Reverse Schedule
+          </div>
+          <div style={styles.stopList}>
+            {reversedStops.map((stopId, i) => {
+              const st = stations[stopId];
+              return (
+                <div key={stopId} style={styles.stopRow}>
+                  <span style={{ ...styles.stopDot, background: line.color }} />
+                  <span style={styles.stopName}>{st?.name ?? stopId}</span>
+                  <span style={styles.stopTime}>{revDepTimeAtStop(i)}</span>
+                  {i < reversedStops.length - 1 && (
+                    <div style={styles.travelSegment}>
+                      <span style={styles.readonlyTime}>
+                        {travelTimes[travelTimes.length - 1 - i] ?? 5}
+                      </span>
+                      <span style={styles.unit}>min</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={styles.schedGrid}>
+            <span style={styles.schedLabel}>First dep</span>
+            <input
+              type="time"
+              style={styles.timeInput}
+              value={formatTime(revFirst)}
+              onChange={e => setRevFirst(parseTime(e.target.value))}
+              onBlur={saveAll}
+              onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            />
+            <span style={styles.schedLabel}>Last dep</span>
+            <input
+              type="time"
+              style={styles.timeInput}
+              value={formatTime(revLast)}
+              onChange={e => setRevLast(parseTime(e.target.value))}
+              onBlur={saveAll}
+              onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            />
+            <span style={styles.schedLabel}>Headway</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <input
+                type="text"
+                inputMode="numeric"
+                style={styles.smallInput}
+                value={revHeadway}
+                onChange={e => {
+                  const raw = e.target.value.replace(/\D/g, '');
+                  setRevHeadway(parseInt(raw) || 1);
+                }}
+                onBlur={saveAll}
+                onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+              />
+              <span style={styles.unit}>min</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={styles.buttonRow}>
         <button style={styles.doneBtn} onClick={() => setSelectedLineId(null)}>
@@ -304,6 +415,14 @@ const styles: Record<string, React.CSSProperties> = {
     width: 52,
     outline: 'none',
   },
+  readonlyTime: {
+    color: '#555',
+    fontFamily: 'monospace',
+    fontSize: 12,
+    padding: '2px 6px',
+    minWidth: 28,
+    textAlign: 'right' as const,
+  },
   timeInput: {
     background: '#1a1a2e',
     border: '1px solid #333',
@@ -319,13 +438,30 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: '#666',
   },
+  schedSection: {
+    background: '#111124',
+    borderRadius: 4,
+    padding: '8px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    marginTop: 4,
+  },
+  schedSectionHeader: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    color: '#aaa',
+    fontWeight: 700,
+    marginBottom: 2,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
   stopList: {
     display: 'flex',
     flexDirection: 'column',
     gap: 2,
-    background: '#111124',
-    borderRadius: 4,
-    padding: '6px',
+    marginBottom: 6,
   },
   stopRow: {
     display: 'flex',
@@ -343,6 +479,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     color: '#c8c8e0',
     flex: 1,
+  },
+  stopTime: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    color: '#7ec8e3',
+    minWidth: 44,
   },
   removeStopBtn: {
     background: 'none',
@@ -367,16 +509,16 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#666',
     flex: 1,
   },
-  schedRow: {
-    display: 'flex',
+  schedGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'auto 1fr',
+    gap: '4px 8px',
     alignItems: 'center',
-    gap: 8,
   },
   schedLabel: {
     fontFamily: 'monospace',
     fontSize: 11,
     color: '#777',
-    width: 64,
   },
   buttonRow: {
     display: 'flex',

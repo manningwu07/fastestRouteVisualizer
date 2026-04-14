@@ -8,6 +8,15 @@ function toHHMM(minutes: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+function toAMPM(minutes: number): string {
+  const totalMins = Math.floor(minutes);
+  const h24 = Math.floor(totalMins / 60) % 24;
+  const m = totalMins % 60;
+  const ampm = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 || 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
 interface TimetableProps {
   steps?: RouteStep[];
   startTime?: number;
@@ -15,7 +24,7 @@ interface TimetableProps {
 }
 
 export function Timetable({ steps: propSteps, startTime: propStartTime, compact = false }: TimetableProps) {
-  const { stations, lines, currentRoute, routeStartTime } = useStore();
+  const { stations, lines, currentRoute, routeStartTime, showToast } = useStore();
 
   const steps = propSteps ?? currentRoute;
   const startTime = propStartTime ?? routeStartTime;
@@ -32,6 +41,49 @@ export function Timetable({ steps: propSteps, startTime: propStartTime, compact 
 
   const lastStep = steps[steps.length - 1];
   const totalMin = lastStep.cumulativeMin - startTime;
+
+  function buildSheetsRows(): string {
+    // Row 1: station names
+    const names = steps.map(step => stations[step.stationId]?.name ?? step.stationId);
+    // Row 2: arrival times (AM/PM)
+    const times = steps.map((step, i) => toAMPM(i === 0 ? startTime : step.arriveAt));
+    return names.join('\t') + '\n' + times.join('\t');
+  }
+
+  function buildTsvRows(): string {
+    const header = 'Station\tVia\tArrive\tWait\tDepart\tTravel\tCumulative';
+    const rows = steps.map((step, i) => {
+      const stName = stations[step.stationId]?.name ?? step.stationId;
+      const line = step.lineId ? lines[step.lineId] : null;
+      const isFirst = i === 0;
+      const via = isFirst ? '-' : line ? (line.agency || line.id.slice(0, 8)) : 'Run';
+      const arrive = isFirst ? toAMPM(startTime) : toAMPM(step.arriveAt);
+      const wait = isFirst ? '0' : String(step.waitTime);
+      const depart = isFirst ? toAMPM(startTime) : toAMPM(step.departAt);
+      const travel = String(step.travelTime);
+      const cumulative = isFirst ? '0' : String(step.cumulativeMin - startTime);
+      return [stName, via, arrive, wait, depart, travel, cumulative].join('\t');
+    });
+    return header + '\n' + rows.join('\n');
+  }
+
+  async function handleCopySheets() {
+    try {
+      await navigator.clipboard.writeText(buildSheetsRows());
+      showToast('Copied!');
+    } catch {
+      showToast('Copy failed');
+    }
+  }
+
+  async function handleCopyTsv() {
+    try {
+      await navigator.clipboard.writeText(buildTsvRows());
+      showToast('Copied!');
+    } catch {
+      showToast('Copy failed');
+    }
+  }
 
   return (
     <div style={styles.wrapper}>
@@ -114,6 +166,14 @@ export function Timetable({ steps: propSteps, startTime: propStartTime, compact 
           </tfoot>
         </table>
       </div>
+      <div style={styles.copyRow}>
+        <button style={styles.copyBtn} onClick={handleCopySheets} title="Copy station names + arrival times as two rows for Google Sheets">
+          Copy to Clipboard (Sheets)
+        </button>
+        <button style={styles.copyBtn} onClick={handleCopyTsv} title="Copy full timetable as TSV with all columns">
+          Copy as TSV
+        </button>
+      </div>
     </div>
   );
 }
@@ -165,5 +225,21 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     padding: 12,
     fontStyle: 'italic',
+  },
+  copyRow: {
+    display: 'flex',
+    gap: 6,
+    padding: '0 0 4px',
+    flexWrap: 'wrap' as const,
+  },
+  copyBtn: {
+    padding: '4px 10px',
+    background: '#1e2a3a',
+    color: '#7ec8e3',
+    border: '1px solid #3a5f7a',
+    borderRadius: 4,
+    cursor: 'pointer',
+    fontFamily: 'monospace',
+    fontSize: 11,
   },
 };

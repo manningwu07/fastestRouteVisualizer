@@ -1,6 +1,24 @@
 # Node
 /node_modules/
 
+# Build outputs
+/dist/
+/src/dist/
+
+# Test and coverage output
+/coverage/
+
+# Logs
+bun-debug.log*
+
+# Environment files
+.env
+.env.*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+
 # Agents
 /.agents/
 /.claude/

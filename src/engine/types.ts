@@ -3,19 +3,25 @@ export interface Station {
   name: string;
   x: number;
   y: number;
-  agency?: string;
+  agencies: string[];  // supports multiple agencies per station
+}
+
+export interface LineSchedule {
+  firstDeparture: number;  // minutes since midnight, departure from FIRST stop in this direction
+  lastDeparture: number;
+  headwayMin: number;
 }
 
 export interface TransitLine {
   id: string;
   color: string;
   agency: string;
-  stops: string[];         // ordered station IDs
-  travelTimes: number[];   // minutes between consecutive stops (length = stops.length - 1)
-  firstDeparture: number;  // minutes since midnight from first stop
-  lastDeparture: number;
-  headwayMin: number;      // frequency
-  bidirectional: boolean;  // default true; if true, trains run in reverse direction too
+  stops: string[];              // ordered station IDs (forward direction)
+  travelTimes: number[];        // minutes between consecutive stops (length = stops.length - 1)
+  reverseTravelTimes?: number[]; // optional reverse-direction segment times, aligned to forward segment indices
+  forwardSchedule: LineSchedule;
+  reverseSchedule?: LineSchedule; // only if bidirectional
+  bidirectional: boolean;
 }
 
 export interface RunEdge {
